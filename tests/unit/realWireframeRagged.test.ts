@@ -1,42 +1,42 @@
 /**
  * The exact real-world ragged wireframe fixture that motivated this tool's
  * detection tolerance work (see tests/fixtures/realWireframeRagged.ts for
- * the verbatim source, and detect.ts's module doc for the design: 1-cell-
- * tolerant horizontal top-edge scans, corner-anchored (unlimited-gap)
- * vertical edge scans, with an attachment check on each candidate corner).
+ * the verbatim source, and detect.ts's module doc for the design: one
+ * order-based edge alignment scoring each cell rail/corner/slack/break, with
+ * a tight consecutive-slack limit on the continuous horizontal border and no
+ * limit on the drifting vertical sides).
  *
- * Corner-anchored vertical detection recovers all 4 of this fixture's
- * intended nested boxes, plus 3 further legitimate sub-boxes anchored at
- * internal T-junctions (the same connectivity-based design that already
- * lets a divider or a shared wall start its own valid box candidate; see
- * tests/unit/detect.test.ts's "side-by-side boxes" case) — 7 total.
+ * Detection recovers all 4 of this fixture's intended nested boxes, plus 3
+ * further legitimate sub-boxes anchored at internal T-junctions (the same
+ * connectivity-based design that already lets a divider or a shared wall
+ * start its own valid box candidate; see tests/unit/detect.test.ts's
+ * "side-by-side boxes" case) — 7 total.
  *
- * The outer box specifically needed one more piece of tolerance beyond
- * plain corner-anchoring to be recoverable:
+ * The outer box specifically needs the attachment check (isAttachedCorner)
+ * to be recoverable:
  *
  *   The stray, disconnected '┘' character at (90, 11) — noted in the
  *   fixture as unrelated to any real box — has connectivity {left, up} with
  *   no other connections: an exact, unambiguous match for a "bottom-right
  *   corner" shape, sitting exactly on column 90, the outer box's own right
- *   edge column. A first version of corner-anchored matching stopped at the
- *   first corner-shaped cell found regardless of whether it was actually
- *   attached to anything, so it stopped here (row 11) instead of continuing
- *   to the real corner at row 17 — the two vertical scans (column 0 finding
- *   17, column 90 finding 11) disagreed, and the outer candidate was
- *   rejected.
+ *   edge column. Without the attachment check, the right edge's alignment
+ *   would score this cell `corner` and close there (row 11) while the left
+ *   edge closes at the real corner (row 17); the two disagree, and the outer
+ *   candidate would be rejected.
  *
- *   detect.ts's isAttachedCorner closes this gap: every neighboring cell of
- *   the stray '┘' (all four directions, not just the two its shape claims)
- *   is a literal blank space — nothing leads into it from anywhere — so it
- *   is skipped as an orphan rather than accepted as a match, and the scan
- *   continues down to the real corner at row 17. Genuine corners elsewhere
- *   in this same fixture have exactly one of their two claimed-direction
- *   neighbors blank (the same interior raggedness that motivated corner-
- *   anchoring in the first place also reaches cells immediately adjacent to
- *   a real corner sometimes) — isAttachedCorner requires only ONE non-blank
- *   claimed-direction neighbor, not both, specifically so it doesn't reject
- *   those. Only a corner with NO real content on either claimed side — the
- *   stray character's actual signature — is treated as an orphan.
+ *   isAttachedCorner closes this gap: every neighboring cell of the stray
+ *   '┘' (all four directions, not just the two its shape claims) is a
+ *   literal blank space — nothing leads into it from anywhere — so
+ *   verticalRole scores it `slack` (stepped over as an alignment gap) rather
+ *   than `corner`, and the edge alignment continues down to the real corner
+ *   at row 17. Genuine corners elsewhere in this same fixture have exactly
+ *   one of their two claimed-direction neighbors blank (the same interior
+ *   raggedness that the drifting-vertical rule exists for also reaches cells
+ *   immediately adjacent to a real corner sometimes) — isAttachedCorner
+ *   requires only ONE non-blank claimed-direction neighbor, not both,
+ *   specifically so it doesn't reject those. Only a corner with NO real
+ *   content on either claimed side — the stray character's actual signature
+ *   — is treated as an orphan.
  */
 import { describe, it, expect } from 'vitest';
 import { parseDiagram } from '@/lib/parse';
@@ -106,7 +106,7 @@ describe('the real ragged wireframe fixture', () => {
     // genuinely part of the outer box's interior-facing border run. What
     // must NOT happen is this specific cell being overwritten by healing:
     // it already carries a real (if orphaned) box-drawing character, so
-    // classifyEdgeCell must treat it as 'connector', never 'gap', and no
+    // healing must treat it as occupied, never as a blank gap, and no
     // detected box's healed-cell list may include it.
     const detailed = detectBoxesWithHealing(doc);
     for (const { healed } of detailed) {
@@ -117,10 +117,10 @@ describe('the real ragged wireframe fixture', () => {
 
   it('reports the actual computed healed-gap count across all detected boxes (51 distinct cells)', () => {
     // Computed, not guessed: interior rows commonly have no border character
-    // at the expected column at all across many consecutive rows, since
-    // vertical edges are corner-anchored rather than edge-walked, so the
-    // healed count is substantial — now including the outer box's own
-    // right-edge gaps once it's correctly detected.
+    // at the expected column at all across many consecutive rows, since the
+    // vertical edge alignment tolerates unlimited consecutive slack, so the
+    // healed count is substantial — including the outer box's own right-edge
+    // gaps.
     const detailed = detectBoxesWithHealing(doc);
     const distinctHealed = new Set(detailed.flatMap((d) => d.healed.map((h) => `${h.x},${h.y}`)));
     expect(distinctHealed.size).toBe(51);

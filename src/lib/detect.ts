@@ -7,44 +7,62 @@
  * top-left corner as long as it connects right+down, regardless of whether
  * it's a plain `┌` or a T-junction/cross (`┬`, `├`, `┼`) formed where this
  * box's border touches another box's or an internal divider — so nested and
- * touching boxes are both detected without special-casing every shape.
+ * touching boxes are both detected without special-casing every shape. From a
+ * candidate top-left corner we trace the four edges to their corners (the
+ * docutils GridTableParser corner-tracing approach); this is what recovers
+ * NESTING, and it's kept as-is.
  *
- * Tolerant detection: a diagram that's been hand-edited, copied through a
- * chat/doc tool, or maintained over time in a code comment commonly ends up
- * with a ragged border. Two different kinds of raggedness turned out to need
- * two different tolerance strategies, confirmed against a real, messy
- * user-provided wireframe:
+ * Tolerant detection — ONE order-based edge alignment.
+ * ----------------------------------------------------
+ * Real pasted input is RAGGED: a diagram that's been hand-edited, copied
+ * through a chat/doc tool, or maintained in a code comment drifts. Rather than
+ * three separately-tuned tolerance heuristics, every edge is traced by a
+ * single mechanism (`alignEdge`): starting from a confirmed corner, step cell
+ * by cell toward where the opposite corner should be and classify each cell
+ * into one of four ALIGNMENT ROLES:
  *
- *  - The horizontal top edge (found by scanForCorner, unchanged from the
- *    original design) tolerates exactly one isolated blank cell, healed as a
- *    pass-through — real top/bottom border rows are typically drawn as one
- *    continuous, deliberate run of dashes, so a wider gap there really does
- *    mean "this isn't a closed box".
- *  - The vertical edges (searchColumnForCorner) are corner-anchored instead
- *    of edge-walked: interior content rows commonly don't have a border
- *    character at the expected column AT ALL — not off by one cell, but
- *    genuinely missing for many consecutive rows — because getting a side
- *    border's padding exactly right on every single content row is far more
- *    error-prone than drawing one straight horizontal run. Requiring every
- *    row between two corners to carry real connectivity is the wrong
- *    requirement; the corners themselves (┌┐└┘, or a T-junction/cross where
- *    this box's edge meets another box's or a divider) are reliable, so a
- *    vertical scan skips an unlimited run of blanks/plain content and
- *    anchors on the next genuine corner-shaped character instead. Finding a
- *    corner of the WRONG shape (not blank, not our corner, not a pass-
- *    through) means the scan has walked into unrelated structure — it must
- *    stop and reject there, never skip past it to pair with some farther,
- *    coincidentally-matching corner (that's what actually keeps this safe:
- *    see the "does not pair across unrelated structure" test). A corner-
- *    shaped cell that IS the right shape still isn't accepted blindly: it
- *    must be attached to real content on at least one of its two claimed
- *    sides (see isAttachedCorner) — otherwise it may be a stray, fully
- *    isolated character that only coincidentally shares a real corner's
- *    connectivity signature, confirmed as an actual case in real input.
+ *   - rail   — a real border cell carrying the edge straight through this
+ *              position (a plain ─/│, or a T-junction/cross whose matching arm
+ *              passes through). The edge is present here; keep going.
+ *   - corner — the corner we're aligning toward. Stop: the edge closes here.
+ *   - slack  — the edge is ABSENT here but tolerably so: a blank to heal, an
+ *              off-axis mark, plain label text bleeding onto the line, or a
+ *              corner-shaped glyph that turns out to be a detached orphan.
+ *              Step over it (an alignment gap/indel) — order is preserved.
+ *   - break  — real, on-axis structure of the WRONG shape: a different box's
+ *              wall, or a mis-drawn glyph. Aligning past it would cross into
+ *              unrelated structure, so the whole edge is rejected right here.
+ *              This is the safety boundary (see the "does not pair across
+ *              unrelated structure" test): we never skip past a break to reach
+ *              some farther, coincidentally-matching corner.
  *
- * Corners are never healed in either scan — only the run of border cells
- * *between* two already-real corners can have gaps filled in. A missing or
- * wrong corner is a structural question this heuristic doesn't try to
+ * This is the order-based / ordinal principle (as in GFM pipe tables and
+ * org-mode: the k-th corner closes the k-th edge) rather than position
+ * clustering: each edge is traced along a FIXED row or column, so two genuine
+ * edges only two columns apart stay distinct even when per-row padding drift
+ * is far larger — a case no position-snapping tolerance can handle. The three
+ * former heuristics all fall out of this one model: single-cell gap healing is
+ * `slack` under a tight run limit; unlimited blank-skipping is `slack` under
+ * no run limit; orphan rejection is just how a corner-shaped cell is scored
+ * `corner`-vs-`slack` (see isAttachedCorner).
+ *
+ * The ONLY thing that separates a horizontal edge from a vertical one is how
+ * much CONSECUTIVE slack each tolerates, because the two border kinds are
+ * drawn differently:
+ *
+ *   - A horizontal top/bottom border is a single deliberate run of dashes, so
+ *     a real one is continuous. At most ONE blank in a row is a paste nick;
+ *     two in a row means "not a closed box". → maxSlackRun = 1.
+ *   - A vertical side border drifts: getting the padding right on every
+ *     interior content row is far more error-prone than drawing one straight
+ *     horizontal run, so the column is genuinely empty for many consecutive
+ *     rows between two real corners. Its border is expected to be sparse, and
+ *     order preservation — not a per-row border requirement — is what keeps it
+ *     safe. → maxSlackRun = Infinity.
+ *
+ * Corners are never healed: only the run of border cells *between* two
+ * already-real corners can have gaps filled in (collectGapHealing). A missing
+ * or wrong corner is a structural question this heuristic doesn't try to
  * answer.
  */
 import { bounds, getCell, type GridDoc } from './grid';
@@ -97,68 +115,104 @@ function connAt(doc: GridDoc, x: number, y: number): Connectivity | null {
   return connectivityOf(cell.ch);
 }
 
-type EdgeStep =
-  | { kind: 'connector'; conn: Connectivity }
-  | { kind: 'gap' } // a missing cell, or a literal space — a healable border imperfection
-  | { kind: 'invalid' }; // real, non-box content sitting on the border line — never healed
-
-/**
- * Classify one cell along an edge scan. A cell with real (non-space, non-box)
- * content is `invalid`, not a `gap` — this heuristic only ever papers over a
- * genuinely blank spot, never someone's actual text or a mis-shaped border
- * character (e.g. a stray corner glyph sitting where a straight edge should
- * be — that's a real, different character, not an absence).
- */
-function classifyEdgeCell(doc: GridDoc, x: number, y: number): EdgeStep {
-  const cell = getCell(doc, x, y);
-  if (!cell) return { kind: 'gap' };
-  if (cell.continuation) return { kind: 'invalid' };
-  const conn = connectivityOf(cell.ch);
-  if (conn) return { kind: 'connector', conn };
-  if (cell.ch === ' ') return { kind: 'gap' };
-  return { kind: 'invalid' };
-}
-
-/**
- * Search from (startX, startY) stepping by (dx, dy) for a cell matching
- * `isCornerMatch`, treating cells matching `isPassThrough` as "keep going"
- * and a single blank cell as a healed pass-through (never two in a row).
- * Returns the number of steps taken to reach the match, or -1.
- *
- * Used only for the horizontal top-edge scan — see this module's doc for why
- * the vertical scans (searchColumnForCorner, below) use a different,
- * unlimited-gap strategy instead.
- */
-function scanForCorner(
-  doc: GridDoc,
-  startX: number,
-  startY: number,
-  dx: number,
-  dy: number,
-  maxSteps: number,
-  isPassThrough: (c: Connectivity) => boolean,
-  isCornerMatch: (c: Connectivity) => boolean
-): number {
-  let gapRun = 0;
-  for (let i = 1; i <= maxSteps; i++) {
-    const step = classifyEdgeCell(doc, startX + dx * i, startY + dy * i);
-    if (step.kind === 'invalid') return -1;
-    if (step.kind === 'gap') {
-      gapRun++;
-      if (gapRun > 1) return -1; // two+ consecutive blanks — not a small paste imperfection
-      continue; // tentatively healed; only confirmed once a real cell is found on the far side
-    }
-    gapRun = 0;
-    if (isPassThrough(step.conn)) continue;
-    if (isCornerMatch(step.conn)) return i;
-    return -1; // dead end — neither a pass-through nor the corner we're looking for
-  }
-  return -1;
-}
-
 function isBlankCell(doc: GridDoc, x: number, y: number): boolean {
   const cell = getCell(doc, x, y);
   return !cell || cell.ch === ' ';
+}
+
+/** The role a cell plays when an edge is traced across it — see the module doc. */
+type EdgeRole = 'rail' | 'corner' | 'slack' | 'break';
+
+/**
+ * Trace one edge from the confirmed anchor corner at (ax, ay), stepping by
+ * (dx, dy) toward the opposite corner. `roleOf` scores each cell for this
+ * edge; `maxSlackRun` bounds how many CONSECUTIVE slack cells are tolerated (1
+ * for the continuous horizontal border, Infinity for the drifting vertical
+ * one — the single knob that distinguishes the two edge kinds).
+ *
+ * Returns the number of steps taken to reach the terminating corner, or null
+ * if the edge broke, over-ran its slack budget, or hit the grid edge without
+ * closing. All three of detect.ts's former tolerance mechanisms live here now,
+ * as the interplay of the four roles and this one run limit.
+ */
+function alignEdge(
+  ax: number,
+  ay: number,
+  dx: number,
+  dy: number,
+  limit: number,
+  maxSlackRun: number,
+  roleOf: (x: number, y: number) => EdgeRole
+): number | null {
+  let slackRun = 0;
+  for (let i = 1; i <= limit; i++) {
+    const role = roleOf(ax + dx * i, ay + dy * i);
+    if (role === 'break') return null; // unrelated structure — never align past it
+    if (role === 'corner') return i; // the edge closes here
+    if (role === 'rail') {
+      slackRun = 0; // a real border cell resets the run
+      continue;
+    }
+    // slack: an alignment gap. Step over it, but bail once the run of
+    // consecutive gaps exceeds what this edge kind tolerates.
+    slackRun += 1;
+    if (slackRun > maxSlackRun) return null;
+  }
+  return null;
+}
+
+/**
+ * Score a cell on a horizontal top/bottom edge aligning toward a corner of
+ * shape `isCorner`. A real top border is one continuous run of dashes, so real
+ * (non-space, non-box) content or a wrong-shaped connector is a `break`, not
+ * `slack` — this only ever papers over a genuinely blank spot, never someone's
+ * text or a mis-shaped border character. Pass-through (`─`, or a `┬`/`┴`/`┼`
+ * crossing straight through) is scored `rail` BEFORE the corner test, so a
+ * shared start always resolves to the larger rectangle.
+ */
+function horizontalRole(
+  doc: GridDoc,
+  x: number,
+  y: number,
+  isCorner: (c: Connectivity) => boolean
+): EdgeRole {
+  const cell = getCell(doc, x, y);
+  if (!cell) return 'slack'; // absent — a gap to heal
+  if (cell.continuation) return 'break'; // second column of a wide glyph — real content
+  const conn = connectivityOf(cell.ch);
+  if (!conn) return cell.ch === ' ' ? 'slack' : 'break'; // blank heals; other text breaks
+  if (conn.left && conn.right) return 'rail'; // the top edge passes straight through
+  if (isCorner(conn)) return 'corner';
+  return 'break'; // a connector of the wrong shape sitting on the border line
+}
+
+/**
+ * Score a cell on a vertical side edge aligning toward a corner of shape
+ * `isCorner`. Unlike the horizontal border, this one is expected to be sparse:
+ * blanks and plain label text alike are `slack` (skipped with no run limit),
+ * and only a box-drawing character decides the outcome. A vertical
+ * pass-through (both up AND down — a plain `│`, or a divider/cross whose
+ * vertical arm continues through this cell) is `rail`. A purely horizontal
+ * mark (a stray `─` with no vertical component) is off this axis — `slack`.
+ * Anything with a vertical component that is neither a through-line nor our
+ * corner is unrelated structure — a `break`.
+ *
+ * A corner-shaped cell is only scored `corner` when it is also attached (see
+ * isAttachedCorner); a detached orphan of the right shape is scored `slack`
+ * and stepped over, since a real corner may still lie farther along.
+ */
+function verticalRole(
+  doc: GridDoc,
+  x: number,
+  y: number,
+  isCorner: (c: Connectivity) => boolean
+): EdgeRole {
+  const conn = connAt(doc, x, y);
+  if (!conn) return 'slack'; // blank or plain (non-box-drawing) content — border drift
+  if (conn.up && conn.down) return 'rail'; // the vertical edge continues past this row
+  if (isCorner(conn)) return isAttachedCorner(doc, x, y, conn) ? 'corner' : 'slack';
+  if (!conn.up && !conn.down) return 'slack'; // purely horizontal — irrelevant here
+  return 'break'; // a vertical shape that doesn't match — unrelated structure
 }
 
 /**
@@ -167,7 +221,8 @@ function isBlankCell(doc: GridDoc, x: number, y: number): boolean {
  * to share a corner's connectivity signature without being attached to
  * anything (e.g. an isolated `┘` sitting in blank padding, confirmed as a
  * real case in user-provided input: every one of its four neighboring cells
- * is a literal space).
+ * is a literal space). This is what makes verticalRole score such an orphan
+ * `slack` (stepped over) rather than `corner`.
  *
  * Requires only ONE of the corner's claimed-direction neighbors to be
  * non-blank, not both — real corners in ragged input can legitimately have
@@ -187,8 +242,8 @@ function isBlankCell(doc: GridDoc, x: number, y: number): boolean {
  * "attached" even though its connectivity doesn't line up with this
  * corner's — only a genuinely empty cell on both claimed sides means
  * "nothing leads into this corner at all".
- * Checked once per candidate corner, not per plain pass-through cell, so
- * this stays cheap.
+ * Checked once per candidate corner, not per plain slack cell, so this stays
+ * cheap.
  */
 function isAttachedCorner(doc: GridDoc, x: number, y: number, conn: Connectivity): boolean {
   const sides: boolean[] = [];
@@ -200,61 +255,13 @@ function isAttachedCorner(doc: GridDoc, x: number, y: number, conn: Connectivity
 }
 
 /**
- * Search down column `x`, from row `startY + 1` to `maxY`, for the row where
- * this box's vertical edge terminates — see this module's doc for why this
- * is corner-anchored (unlimited gap skipping) rather than edge-walked.
- *
- * At each row, a genuine box-drawing character decides the outcome:
- *  - a vertical pass-through (has both up AND down connectivity — a plain
- *    │, or a T-junction/cross whose vertical arm continues through this
- *    cell, e.g. a divider crossing this box's own border) — the edge
- *    continues past this row, keep scanning.
- *  - a match for `wantedCorner` that is also attached (see
- *    isAttachedCorner) — this is where the edge terminates.
- *  - a match for `wantedCorner` that is NOT attached — an orphan character
- *    sharing the right shape by coincidence; treat it exactly like a gap
- *    and keep scanning past it, since a real corner may still be farther
- *    down.
- *  - a purely horizontal mark (left and/or right, but no vertical
- *    connectivity at all — e.g. a stray ─ sitting mid-column) — not
- *    relevant to a vertical scan either way, keep scanning.
- *  - anything else (some other shape with a vertical component that's
- *    neither a through-line nor our corner) — we've walked into unrelated
- *    structure; stop and reject rather than skip past it. This is the
- *    safety boundary that prevents pairing this box's start with a corner
- *    that belongs to something else.
- * Blank cells and plain (non-box-drawing) content are skipped silently, with
- * no limit on how many in a row.
- */
-function searchColumnForCorner(
-  doc: GridDoc,
-  x: number,
-  startY: number,
-  maxY: number,
-  wantedCorner: (c: Connectivity) => boolean
-): number | null {
-  for (let y = startY + 1; y <= maxY; y++) {
-    const conn = connAt(doc, x, y);
-    if (!conn) continue; // blank or plain (non-box-drawing) content
-    if (conn.up && conn.down) continue; // the vertical edge continues past this row
-    if (wantedCorner(conn)) {
-      if (isAttachedCorner(doc, x, y, conn)) return y;
-      continue; // right shape, but an orphan — not the real corner, keep looking
-    }
-    if (!conn.up && !conn.down) continue; // purely horizontal — irrelevant to this vertical scan
-    return null; // a shape with a vertical component that doesn't match — unrelated structure
-  }
-  return null;
-}
-
-/**
  * Every blank/gap cell along a straight run, and what should fill it — no
- * limit on how many (unlike detection's tolerances above, which exist to
- * decide whether a box exists at all; once a box's corners are already
+ * limit on how many (unlike detection's alignment slack budget, which exists
+ * to decide whether a box exists at all; once a box's corners are already
  * confirmed, every gap along its edges gets healed for rendering/export).
  * Real, non-blank content already there (T-junctions, crosses, or a stray
  * character that doesn't belong to this box) is left untouched — same
- * never-heal-real-content principle as detection's `invalid` classification.
+ * never-heal-real-content principle as an edge trace's `break`/off-axis cells.
  */
 function collectGapHealing(
   doc: GridDoc,
@@ -269,7 +276,7 @@ function collectGapHealing(
   for (let i = 0; i < length; i++) {
     const x = startX + dx * i;
     const y = startY + dy * i;
-    if (classifyEdgeCell(doc, x, y).kind === 'gap') healed.push({ x, y, ch: healChar });
+    if (isBlankCell(doc, x, y)) healed.push({ x, y, ch: healChar });
   }
   return healed;
 }
@@ -303,30 +310,26 @@ function detectBoxesDetailed(doc: GridDoc): DetectedBox[] {
       const start = connAt(doc, x, y);
       if (!start || !start.right || !start.down) continue;
 
-      // Top edge: search right for the top-right corner (left+down) — see
-      // scanForCorner's doc for the pass-through-first priority and the
-      // 1-cell healing tolerance, both unchanged from the original design.
-      const dxTop = scanForCorner(
-        doc,
-        x,
-        y,
-        1,
-        0,
-        maxX - x,
-        (c) => c.left && c.right,
-        (c) => c.left && c.down
+      // Top edge: align rightward toward the top-right corner (left+down),
+      // tolerating at most one consecutive blank (continuous-border rule).
+      const topSteps = alignEdge(x, y, 1, 0, maxX - x, 1, (cx, cy) =>
+        horizontalRole(doc, cx, cy, (c) => c.left && c.down)
       );
-      if (dxTop === -1) continue;
-      const x2 = x + dxTop;
+      if (topSteps === null) continue;
+      const x2 = x + topSteps;
 
-      // Vertical edges: corner-anchored, independently down column x and
-      // column x2, requiring them to agree on the same row — see
-      // searchColumnForCorner's doc.
-      const y2Left = searchColumnForCorner(doc, x, y, maxY, (c) => c.up && c.right);
-      if (y2Left === null) continue;
-      const y2Right = searchColumnForCorner(doc, x2, y, maxY, (c) => c.left && c.up);
-      if (y2Right === null || y2Right !== y2Left) continue;
-      const y2 = y2Left;
+      // Vertical edges: align downward independently down column x (toward the
+      // bottom-left corner) and column x2 (toward the bottom-right), with no
+      // slack limit (drifting-border rule). Both must close on the same row.
+      const leftSteps = alignEdge(x, y, 0, 1, maxY - y, Infinity, (cx, cy) =>
+        verticalRole(doc, cx, cy, (c) => c.up && c.right)
+      );
+      if (leftSteps === null) continue;
+      const rightSteps = alignEdge(x2, y, 0, 1, maxY - y, Infinity, (cx, cy) =>
+        verticalRole(doc, cx, cy, (c) => c.left && c.up)
+      );
+      if (rightSteps === null || rightSteps !== leftSteps) continue;
+      const y2 = y + leftSteps;
 
       const box: Box = { x1: x, y1: y, x2, y2 };
       results.push({ box, healed: healBoxEdges(doc, box) });
