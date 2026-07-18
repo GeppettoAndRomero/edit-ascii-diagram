@@ -1,23 +1,25 @@
 /**
  * The exact real-world fixture that exposed the box-detection failure on
  * ragged/hand-edited input (see detect.ts's module doc for the tolerant-
- * detection design this motivated). Verbatim — not reformatted, not
- * re-aligned — because the raggedness IS the point: row lengths vary row to
- * row, unrelated to any trailing-whitespace stripping.
+ * detection design this motivated: 1-cell-tolerant horizontal scans, and
+ * corner-anchored/unlimited-gap vertical scans with an attachment check on
+ * each candidate corner). Verbatim — not reformatted, not re-aligned —
+ * because the raggedness IS the point: row lengths vary row to row,
+ * unrelated to any trailing-whitespace stripping.
  *
- * IMPORTANT, confirmed by direct inspection (tests/unit/detect.test.ts /
- * tests/unit/realWireframeRagged.test.ts): this specific fixture's
- * raggedness is NOT limited to single-cell gaps. The outer box's right edge
- * alone has gaps of width 1, 2, 3, 4, and 6 cells across different rows, plus
- * one row where a stray '┘' character (not a blank) sits exactly on the scan
- * column. Only single, isolated 1-cell gaps are healable by design (see
- * detect.ts) — bridging wider gaps risks detecting a box the user never
- * drew. So this fixture's outer box (and the inner boxes, which hit the same
- * kind of multi-cell misalignment on their own right edges) are NOT detected
- * even with tolerant detection. This is intentional and covered by a test
- * that documents the real, measured behavior rather than asserting a result
- * that doesn't hold for this input — see that test for the full per-row
- * evidence.
+ * All 4 of this fixture's intended nested boxes are recovered, plus 3
+ * legitimate T-junction-anchored sub-boxes (7 total). The outer box needed
+ * one more piece of tolerance beyond plain corner-anchoring: a stray,
+ * disconnected '┘' character elsewhere in the fixture sits exactly on the
+ * outer box's own right-edge column, in a shape indistinguishable from a
+ * real corner by connectivity alone — but every one of its four neighboring
+ * cells is blank, unlike a real corner (which always has real content, even
+ * if mismatched, on at least one of its two claimed sides). detect.ts's
+ * isAttachedCorner tells the two apart. See
+ * tests/unit/realWireframeRagged.test.ts's module doc for the full,
+ * evidence-backed explanation, and tests/unit/healing.test.ts for the
+ * controlled tests proving the general mechanism (including the safety
+ * boundary against pairing across unrelated structure) works correctly.
  */
 export const REAL_WIREFRAME_RAGGED = `
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐

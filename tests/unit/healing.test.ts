@@ -62,18 +62,20 @@ describe('tolerant detection: a single isolated blank cell heals', () => {
   });
 });
 
-describe('tolerant detection boundary: two-or-more consecutive blanks do not heal', () => {
+describe('tolerant detection boundary: the TOP edge (unchanged) rejects two-or-more consecutive blanks', () => {
+  // The horizontal top-edge scan is unchanged from the original design: a
+  // real top border row is typically drawn as one continuous, deliberate
+  // run of dashes, so a wider gap there really does mean "this isn't a
+  // closed box" — see detect.ts's module doc. The VERTICAL edges are a
+  // different story (below): they're corner-anchored, not edge-walked, so a
+  // gap of any width between two confirmed corners is fine — that's the
+  // actual fix for the real ragged wireframe (tests/unit/realWireframeRagged
+  // .test.ts), where interior rows commonly have no border character at the
+  // expected column at all, not just one cell short.
   it('does not detect a box with a 2-cell gap on the top edge', () => {
     const doc = parseDiagram(['┌────────┐', '│        │', '└────────┘'].join('\n'));
     setCell(doc, 3, 0, null);
     setCell(doc, 4, 0, null); // two consecutive
-    expect(detectBoxes(doc)).toEqual([]);
-  });
-
-  it('does not detect a box with a 2-cell gap on the right edge', () => {
-    const doc = parseDiagram(['┌────────┐', '│        │', '│        │', '└────────┘'].join('\n'));
-    setCell(doc, 9, 1, null);
-    setCell(doc, 9, 2, null);
     expect(detectBoxes(doc)).toEqual([]);
   });
 
@@ -98,6 +100,82 @@ describe('tolerant detection boundary: two-or-more consecutive blanks do not hea
   it('does not heal arbitrary text content sitting on the border line', () => {
     const doc = parseDiagram(['┌────────┐', '│        │', '└────────┘'].join('\n'));
     setCell(doc, 4, 0, { ch: 'X', continuation: false });
+    expect(detectBoxes(doc)).toEqual([]);
+  });
+});
+
+describe('corner-anchored vertical edges: gaps of any width between confirmed corners are fine', () => {
+  it('detects a box whose entire right column is blank for several rows in a row', () => {
+    // A gap far wider than 1 cell — exactly the real-world case (padding
+    // drift across many interior rows) the 1-cell tolerance couldn't cover.
+    const doc = parseDiagram(['┌────────┐', '│        │', '│        │', '│        │', '└────────┘'].join('\n'));
+    setCell(doc, 9, 1, null);
+    setCell(doc, 9, 2, null);
+    setCell(doc, 9, 3, null);
+    expect(detectBoxes(doc)).toEqual([{ x1: 0, y1: 0, x2: 9, y2: 4 }]);
+  });
+
+  it('detects a box whose left column has real text content bleeding into it (skipped, not a border char)', () => {
+    const doc = parseDiagram(['┌────────┐', '│hi      │', '└────────┘'].join('\n'));
+    setCell(doc, 0, 1, { ch: 'X', continuation: false }); // real content sitting where '│' should be
+    expect(detectBoxes(doc)).toEqual([{ x1: 0, y1: 0, x2: 9, y2: 2 }]);
+  });
+
+  it('detects a box with wide gaps on both the left and right columns simultaneously', () => {
+    const doc = parseDiagram(['┌────────┐', '│        │', '│        │', '└────────┘'].join('\n'));
+    setCell(doc, 0, 1, null);
+    setCell(doc, 0, 2, null);
+    setCell(doc, 9, 1, null);
+    setCell(doc, 9, 2, null);
+    expect(detectBoxes(doc)).toEqual([{ x1: 0, y1: 0, x2: 9, y2: 3 }]);
+  });
+
+  it('reports every gap cell healed, not capped at one, once corners are confirmed', () => {
+    const doc = parseDiagram(['┌────────┐', '│        │', '│        │', '│        │', '└────────┘'].join('\n'));
+    setCell(doc, 9, 1, null);
+    setCell(doc, 9, 2, null);
+    setCell(doc, 9, 3, null);
+    const [detailed] = detectBoxesWithHealing(doc);
+    expect(detailed.healed).toEqual([
+      { x: 9, y: 1, ch: '│' },
+      { x: 9, y: 2, ch: '│' },
+      { x: 9, y: 3, ch: '│' },
+    ]);
+  });
+});
+
+describe('corner-anchored vertical edges: the safety boundary against pairing across unrelated structure', () => {
+  // The property that actually keeps corner-anchoring safe: if the first
+  // corner-shaped cell found while scanning down a column is NOT the shape
+  // we want, that means we've walked into a different, unrelated piece of
+  // structure — the scan must stop and reject right there, never skip past
+  // it hoping to find a farther, coincidentally-matching corner. Without
+  // this, a "bigger box" with a missing bottom border could silently swallow
+  // a genuinely separate smaller box sitting in the gap below it.
+  it('stops at a separate smaller box\'s own top corner rather than pairing with a farther unrelated bottom corner', () => {
+    // "Outer" candidate: a real ┌────┐ top row, but its own bottom border
+    // was never drawn (just a blank line) — if the left-column scan skipped
+    // past ANY corner-shaped cell looking only for a shape match, it would
+    // walk straight through the smaller, wholly separate box below and
+    // incorrectly close the "outer" box at the smaller box's own bottom
+    // corner, spanning across unrelated structure.
+    const text = ['┌────┐', '│    │', '', '┌───┐', '│   │', '└───┘'].join('\n');
+    const doc = parseDiagram(text);
+    const boxes = detectBoxes(doc);
+
+    // The wrongly-paired box would be exactly this — it must NOT appear.
+    expect(boxes).not.toContainEqual({ x1: 0, y1: 0, x2: 5, y2: 5 });
+    // The small, separate box is still detected correctly on its own.
+    expect(boxes).toContainEqual({ x1: 0, y1: 3, x2: 4, y2: 5 });
+    // And nothing masquerades as the outer box at all.
+    expect(boxes.filter((b) => b.y1 === 0)).toEqual([]);
+  });
+
+  it('rejects when the left and right column scans land on different rows', () => {
+    // Left column closes cleanly at row 2; right column's corner is missing
+    // entirely (runs off the grid) — the two must agree, or the box doesn't exist.
+    const doc = parseDiagram(['┌───┐', '│   │', '└───┘'].join('\n'));
+    setCell(doc, 4, 2, null); // right column never finds its bottom-right corner
     expect(detectBoxes(doc)).toEqual([]);
   });
 });

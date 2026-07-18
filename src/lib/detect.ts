@@ -9,19 +9,43 @@
  * box's border touches another box's or an internal divider — so nested and
  * touching boxes are both detected without special-casing every shape.
  *
- * Tolerant detection (border-gap healing): a diagram that's been hand-edited,
- * copied through a chat/doc tool, or maintained over time in a code comment
- * commonly ends up with slightly ragged borders — one row a column short of
- * its neighbors. Zero tolerance for that turns a common, realistic paste into
- * total, silent detection failure. So an edge scan treats a single blank
- * (missing or literal space) cell as a healed pass-through, PROVIDED it is a
- * lone gap — flanked by real border connectivity on both sides, never two or
- * more consecutive blanks. Corners themselves are never healed (only the
- * straight run of border cells between two corners can have a gap): a
- * missing/wrong corner is a structural question this heuristic doesn't try
- * to answer. The healing radius is fixed at exactly 1 cell — no
- * configuration surface, no wider tolerance — because bridging a bigger gap
- * risks detecting a box the user never actually drew.
+ * Tolerant detection: a diagram that's been hand-edited, copied through a
+ * chat/doc tool, or maintained over time in a code comment commonly ends up
+ * with a ragged border. Two different kinds of raggedness turned out to need
+ * two different tolerance strategies, confirmed against a real, messy
+ * user-provided wireframe:
+ *
+ *  - The horizontal top edge (found by scanForCorner, unchanged from the
+ *    original design) tolerates exactly one isolated blank cell, healed as a
+ *    pass-through — real top/bottom border rows are typically drawn as one
+ *    continuous, deliberate run of dashes, so a wider gap there really does
+ *    mean "this isn't a closed box".
+ *  - The vertical edges (searchColumnForCorner) are corner-anchored instead
+ *    of edge-walked: interior content rows commonly don't have a border
+ *    character at the expected column AT ALL — not off by one cell, but
+ *    genuinely missing for many consecutive rows — because getting a side
+ *    border's padding exactly right on every single content row is far more
+ *    error-prone than drawing one straight horizontal run. Requiring every
+ *    row between two corners to carry real connectivity is the wrong
+ *    requirement; the corners themselves (┌┐└┘, or a T-junction/cross where
+ *    this box's edge meets another box's or a divider) are reliable, so a
+ *    vertical scan skips an unlimited run of blanks/plain content and
+ *    anchors on the next genuine corner-shaped character instead. Finding a
+ *    corner of the WRONG shape (not blank, not our corner, not a pass-
+ *    through) means the scan has walked into unrelated structure — it must
+ *    stop and reject there, never skip past it to pair with some farther,
+ *    coincidentally-matching corner (that's what actually keeps this safe:
+ *    see the "does not pair across unrelated structure" test). A corner-
+ *    shaped cell that IS the right shape still isn't accepted blindly: it
+ *    must be attached to real content on at least one of its two claimed
+ *    sides (see isAttachedCorner) — otherwise it may be a stray, fully
+ *    isolated character that only coincidentally shares a real corner's
+ *    connectivity signature, confirmed as an actual case in real input.
+ *
+ * Corners are never healed in either scan — only the run of border cells
+ * *between* two already-real corners can have gaps filled in. A missing or
+ * wrong corner is a structural question this heuristic doesn't try to
+ * answer.
  */
 import { bounds, getCell, type GridDoc } from './grid';
 import { connectivityOf, type Connectivity } from './boxChars';
@@ -100,6 +124,10 @@ function classifyEdgeCell(doc: GridDoc, x: number, y: number): EdgeStep {
  * `isCornerMatch`, treating cells matching `isPassThrough` as "keep going"
  * and a single blank cell as a healed pass-through (never two in a row).
  * Returns the number of steps taken to reach the match, or -1.
+ *
+ * Used only for the horizontal top-edge scan — see this module's doc for why
+ * the vertical scans (searchColumnForCorner, below) use a different,
+ * unlimited-gap strategy instead.
  */
 function scanForCorner(
   doc: GridDoc,
@@ -128,65 +156,139 @@ function scanForCorner(
   return -1;
 }
 
+function isBlankCell(doc: GridDoc, x: number, y: number): boolean {
+  const cell = getCell(doc, x, y);
+  return !cell || cell.ch === ' ';
+}
+
 /**
- * Verify a fixed-length straight run of `length` cells starting at
- * (startX, startY) stepping by (dx, dy), each required to satisfy `isValid`
- * — with the same single-blank-gap tolerance as scanForCorner. Returns the
- * healed gap positions (with the border character that belongs there) on
- * success, or `ok: false` if any cell is invalid or two+ gaps run together.
+ * A corner-shaped cell is only a *real* corner if it isn't floating alone in
+ * blank space — otherwise it's a stray, disconnected character that happens
+ * to share a corner's connectivity signature without being attached to
+ * anything (e.g. an isolated `┘` sitting in blank padding, confirmed as a
+ * real case in user-provided input: every one of its four neighboring cells
+ * is a literal space).
+ *
+ * Requires only ONE of the corner's claimed-direction neighbors to be
+ * non-blank, not both — real corners in ragged input can legitimately have
+ * ONE side blank too (e.g. a box's own right column has the usual missing-
+ * border-on-interior-rows raggedness right up to the last row before its
+ * bottom corner, so the corner's "up" neighbor is genuinely blank even
+ * though the corner itself is completely real; confirmed as a real case in
+ * user-provided input). Only a corner with NO real content on either claimed
+ * side at all is the isolated-orphan pattern this exists to catch.
+ *
+ * Also deliberately checks "is the neighbor blank", not "does the
+ * neighbor's connectivity exactly match" — a genuine corner's non-blank
+ * neighbor is sometimes a cell that belongs to a *different*, coincidentally
+ * -adjacent structure (e.g. one nested box's bottom row sitting directly
+ * above a sibling box's own bottom-right corner) rather than this box's own
+ * continuing border. That's real content, not an absence, so it counts as
+ * "attached" even though its connectivity doesn't line up with this
+ * corner's — only a genuinely empty cell on both claimed sides means
+ * "nothing leads into this corner at all".
+ * Checked once per candidate corner, not per plain pass-through cell, so
+ * this stays cheap.
  */
-function verifySegment(
+function isAttachedCorner(doc: GridDoc, x: number, y: number, conn: Connectivity): boolean {
+  const sides: boolean[] = [];
+  if (conn.up) sides.push(!isBlankCell(doc, x, y - 1));
+  if (conn.down) sides.push(!isBlankCell(doc, x, y + 1));
+  if (conn.left) sides.push(!isBlankCell(doc, x - 1, y));
+  if (conn.right) sides.push(!isBlankCell(doc, x + 1, y));
+  return sides.some(Boolean);
+}
+
+/**
+ * Search down column `x`, from row `startY + 1` to `maxY`, for the row where
+ * this box's vertical edge terminates — see this module's doc for why this
+ * is corner-anchored (unlimited gap skipping) rather than edge-walked.
+ *
+ * At each row, a genuine box-drawing character decides the outcome:
+ *  - a vertical pass-through (has both up AND down connectivity — a plain
+ *    │, or a T-junction/cross whose vertical arm continues through this
+ *    cell, e.g. a divider crossing this box's own border) — the edge
+ *    continues past this row, keep scanning.
+ *  - a match for `wantedCorner` that is also attached (see
+ *    isAttachedCorner) — this is where the edge terminates.
+ *  - a match for `wantedCorner` that is NOT attached — an orphan character
+ *    sharing the right shape by coincidence; treat it exactly like a gap
+ *    and keep scanning past it, since a real corner may still be farther
+ *    down.
+ *  - a purely horizontal mark (left and/or right, but no vertical
+ *    connectivity at all — e.g. a stray ─ sitting mid-column) — not
+ *    relevant to a vertical scan either way, keep scanning.
+ *  - anything else (some other shape with a vertical component that's
+ *    neither a through-line nor our corner) — we've walked into unrelated
+ *    structure; stop and reject rather than skip past it. This is the
+ *    safety boundary that prevents pairing this box's start with a corner
+ *    that belongs to something else.
+ * Blank cells and plain (non-box-drawing) content are skipped silently, with
+ * no limit on how many in a row.
+ */
+function searchColumnForCorner(
+  doc: GridDoc,
+  x: number,
+  startY: number,
+  maxY: number,
+  wantedCorner: (c: Connectivity) => boolean
+): number | null {
+  for (let y = startY + 1; y <= maxY; y++) {
+    const conn = connAt(doc, x, y);
+    if (!conn) continue; // blank or plain (non-box-drawing) content
+    if (conn.up && conn.down) continue; // the vertical edge continues past this row
+    if (wantedCorner(conn)) {
+      if (isAttachedCorner(doc, x, y, conn)) return y;
+      continue; // right shape, but an orphan — not the real corner, keep looking
+    }
+    if (!conn.up && !conn.down) continue; // purely horizontal — irrelevant to this vertical scan
+    return null; // a shape with a vertical component that doesn't match — unrelated structure
+  }
+  return null;
+}
+
+/**
+ * Every blank/gap cell along a straight run, and what should fill it — no
+ * limit on how many (unlike detection's tolerances above, which exist to
+ * decide whether a box exists at all; once a box's corners are already
+ * confirmed, every gap along its edges gets healed for rendering/export).
+ * Real, non-blank content already there (T-junctions, crosses, or a stray
+ * character that doesn't belong to this box) is left untouched — same
+ * never-heal-real-content principle as detection's `invalid` classification.
+ */
+function collectGapHealing(
   doc: GridDoc,
   startX: number,
   startY: number,
   dx: number,
   dy: number,
   length: number,
-  isValid: (c: Connectivity) => boolean,
   healChar: '─' | '│'
-): { ok: boolean; healed: HealedCell[] } {
+): HealedCell[] {
   const healed: HealedCell[] = [];
-  let gapRun = 0;
   for (let i = 0; i < length; i++) {
     const x = startX + dx * i;
     const y = startY + dy * i;
-    const step = classifyEdgeCell(doc, x, y);
-    if (step.kind === 'invalid') return { ok: false, healed: [] };
-    if (step.kind === 'gap') {
-      gapRun++;
-      if (gapRun > 1) return { ok: false, healed: [] };
-      healed.push({ x, y, ch: healChar });
-      continue;
-    }
-    gapRun = 0;
-    if (!isValid(step.conn)) return { ok: false, healed: [] };
+    if (classifyEdgeCell(doc, x, y).kind === 'gap') healed.push({ x, y, ch: healChar });
   }
-  return { ok: true, healed };
+  return healed;
 }
 
 /**
- * Re-derive the gap cells healed for an already-known box (its four corners
- * given, not searched for). Used by edit operations (lib/ops.ts) so that
- * moving, resizing, or relabeling a box that had a healed border bakes the
- * real character in rather than reproducing the gap on export — without
- * touching any border cell that wasn't actually a gap (T-junctions and
- * crosses shared with a neighboring box are left exactly as they are).
+ * Every gap cell along an already-known box's four edges, healed. Used both
+ * internally (once detection confirms a box's corners) and by edit
+ * operations (lib/ops.ts) so that moving, resizing, or relabeling a box that
+ * had a ragged border bakes the real characters in rather than reproducing
+ * the gaps on export.
  */
 export function healBoxEdges(doc: GridDoc, box: Box): HealedCell[] {
   const innerWidth = box.x2 - box.x1 - 1;
   const innerHeight = box.y2 - box.y1 - 1;
-  const top = verifySegment(doc, box.x1 + 1, box.y1, 1, 0, innerWidth, (c) => c.left && c.right, '─');
-  const bottom = verifySegment(doc, box.x1 + 1, box.y2, 1, 0, innerWidth, (c) => c.left && c.right, '─');
-  const left = verifySegment(doc, box.x1, box.y1 + 1, 0, 1, innerHeight, (c) => c.up && c.down, '│');
-  const right = verifySegment(doc, box.x2, box.y1 + 1, 0, 1, innerHeight, (c) => c.up && c.down, '│');
-  // A confirmed box's edges are already known-valid by construction; !ok here
-  // would mean the box changed shape between calls, not a real case — treat
-  // defensively as "nothing to heal" rather than throwing.
   return [
-    ...(top.ok ? top.healed : []),
-    ...(bottom.ok ? bottom.healed : []),
-    ...(left.ok ? left.healed : []),
-    ...(right.ok ? right.healed : []),
+    ...collectGapHealing(doc, box.x1 + 1, box.y1, 1, 0, innerWidth, '─'), // top
+    ...collectGapHealing(doc, box.x1 + 1, box.y2, 1, 0, innerWidth, '─'), // bottom
+    ...collectGapHealing(doc, box.x1, box.y1 + 1, 0, 1, innerHeight, '│'), // left
+    ...collectGapHealing(doc, box.x2, box.y1 + 1, 0, 1, innerHeight, '│'), // right
   ];
 }
 
@@ -201,20 +303,9 @@ function detectBoxesDetailed(doc: GridDoc): DetectedBox[] {
       const start = connAt(doc, x, y);
       if (!start || !start.right || !start.down) continue;
 
-      // Top edge: search right for the top-right corner (left+down).
-      //
-      // Order matters here: a T-junction like `┤` or `┼` satisfies BOTH "this
-      // is a plain pass-through edge cell" (left+right) AND "this looks like
-      // a corner" (left+down) at once — e.g. where a `├─...─┤` divider row
-      // crosses this box's own left/right border on its way through the
-      // interior. Checking the pass-through condition FIRST means the scan
-      // treats such a cell as "the border keeps going", not "the border ends
-      // here", so a divider crossing a box's edge doesn't truncate it. Only
-      // a cell that is a corner but NOT also a valid pass-through stops the
-      // scan. (Whether an ambiguous ┼-as-true-corner case is instead a
-      // pass-through is inherently undecidable from local connectivity alone
-      // — this heuristic favors the larger enclosing rectangle, matching how
-      // dividers are actually used in real diagrams; see boxChars.ts.)
+      // Top edge: search right for the top-right corner (left+down) — see
+      // scanForCorner's doc for the pass-through-first priority and the
+      // 1-cell healing tolerance, both unchanged from the original design.
       const dxTop = scanForCorner(
         doc,
         x,
@@ -228,46 +319,17 @@ function detectBoxesDetailed(doc: GridDoc): DetectedBox[] {
       if (dxTop === -1) continue;
       const x2 = x + dxTop;
 
-      // Left edge: search down for the bottom-left corner (up+right), same priority.
-      const dyLeft = scanForCorner(
-        doc,
-        x,
-        y,
-        0,
-        1,
-        maxY - y,
-        (c) => c.up && c.down,
-        (c) => c.up && c.right
-      );
-      if (dyLeft === -1) continue;
-      const y2 = y + dyLeft;
+      // Vertical edges: corner-anchored, independently down column x and
+      // column x2, requiring them to agree on the same row — see
+      // searchColumnForCorner's doc.
+      const y2Left = searchColumnForCorner(doc, x, y, maxY, (c) => c.up && c.right);
+      if (y2Left === null) continue;
+      const y2Right = searchColumnForCorner(doc, x2, y, maxY, (c) => c.left && c.up);
+      if (y2Right === null || y2Right !== y2Left) continue;
+      const y2 = y2Left;
 
-      const bottomRight = connAt(doc, x2, y2);
-      if (!bottomRight || !bottomRight.left || !bottomRight.up) continue;
-
-      const innerWidth = x2 - x - 1;
-      const innerHeight = y2 - y - 1;
-      const bottomVerify = verifySegment(doc, x + 1, y2, 1, 0, innerWidth, (c) => c.left && c.right, '─');
-      if (!bottomVerify.ok) continue;
-      const rightVerify = verifySegment(doc, x2, y + 1, 0, 1, innerHeight, (c) => c.up && c.down, '│');
-      if (!rightVerify.ok) continue;
-
-      // Re-derive the top/left edges' own healed cells via the same
-      // fixed-length verification used for bottom/right, rather than reusing
-      // scanForCorner's internal bookkeeping — one shared definition of
-      // "what counts as healed" for all four edges, not two separate ones
-      // that could quietly drift apart.
-      const topVerify = verifySegment(doc, x + 1, y, 1, 0, innerWidth, (c) => c.left && c.right, '─');
-      const leftVerify = verifySegment(doc, x, y + 1, 0, 1, innerHeight, (c) => c.up && c.down, '│');
-
-      const healed = [
-        ...(topVerify.ok ? topVerify.healed : []),
-        ...(leftVerify.ok ? leftVerify.healed : []),
-        ...bottomVerify.healed,
-        ...rightVerify.healed,
-      ];
-
-      results.push({ box: { x1: x, y1: y, x2, y2 }, healed });
+      const box: Box = { x1: x, y1: y, x2, y2 };
+      results.push({ box, healed: healBoxEdges(doc, box) });
     }
   }
   return results;
