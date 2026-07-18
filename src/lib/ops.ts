@@ -12,7 +12,7 @@
  */
 import { bounds, getCell, setCell, type GridCell, type GridDoc } from './grid';
 import { printGrid } from './print';
-import type { Box } from './detect';
+import { healBoxEdges, type Box } from './detect';
 import { clusterWidth, graphemeClusters } from './width';
 
 export const MIN_BOX_WIDTH = 3;
@@ -38,6 +38,22 @@ function drawBorder(doc: GridDoc, x1: number, y1: number, x2: number, y2: number
   for (let y = y1 + 1; y < y2; y++) {
     setCell(doc, x1, y, { ch: '│', continuation: false });
     setCell(doc, x2, y, { ch: '│', continuation: false });
+  }
+}
+
+/**
+ * Fill in any border gaps detect.ts's tolerant scan healed for this box —
+ * surgically (only the specific gap cells, via the exact character that
+ * belongs there), never touching a border cell that wasn't actually a gap
+ * (a T-junction/cross shared with a neighboring box is left exactly as-is).
+ * Called at the start of any op that touches an existing box's identity
+ * (move/resize/relabel), so a box whose import was ragged comes out whole
+ * once the user has actually edited it — see detect.ts's module doc and
+ * issue tracker note on tolerant detection.
+ */
+function healBorder(doc: GridDoc, box: Box): void {
+  for (const cell of healBoxEdges(doc, box)) {
+    setCell(doc, cell.x, cell.y, { ch: cell.ch, continuation: false });
   }
 }
 
@@ -95,6 +111,9 @@ export function moveBox(doc: GridDoc, box: Box, newX1: number, newY1: number): s
   const dx = x1 - box.x1;
   const dy = y1 - box.y1;
   if (dx !== 0 || dy !== 0) {
+    // Heal before snapshotting so the healed cells — not the gaps — travel
+    // with the box to its new position.
+    healBorder(doc, box);
     const snapshot: Array<[number, number, GridCell]> = [];
     for (let y = box.y1; y <= box.y2; y++) {
       for (let x = box.x1; x <= box.x2; x++) {
@@ -108,7 +127,13 @@ export function moveBox(doc: GridDoc, box: Box, newX1: number, newY1: number): s
   return printGrid(doc);
 }
 
-/** Resize a box to `newWidth` x `newHeight` grid columns/rows, keeping its top-left corner fixed. */
+/**
+ * Resize a box to `newWidth` x `newHeight` grid columns/rows, keeping its
+ * top-left corner fixed. No explicit healBorder() call needed here: drawBorder
+ * below unconditionally overwrites every border cell of the new rectangle
+ * with a fresh, correct character regardless of what (if anything) was there
+ * before, so any gap is filled as a side effect of the ordinary redraw.
+ */
 export function resizeBox(doc: GridDoc, box: Box, newWidth: number, newHeight: number): string {
   const width = Math.max(MIN_BOX_WIDTH, Math.round(newWidth));
   const height = Math.max(MIN_BOX_HEIGHT, Math.round(newHeight));
@@ -123,6 +148,7 @@ export function resizeBox(doc: GridDoc, box: Box, newWidth: number, newHeight: n
 
 /** Replace a box's interior text (D10 inline text editing). */
 export function setBoxText(doc: GridDoc, box: Box, text: string): string {
+  healBorder(doc, box); // relabeling still touches this box's identity — see healBorder's doc comment
   writeInteriorText(doc, box.x1, box.y1, box.x2, box.y2, text);
   return printGrid(doc);
 }

@@ -31,9 +31,14 @@ export const ui = {
     startOverConfirmConfirm: 'Paste different',
     startOverConfirmCancel: 'Cancel',
 
+    // Editor overlay
+    editorAria: 'Diagram editor',
+    closeEditor: 'Close the editor',
+
     // Canvas
     canvasHeading: 'Canvas',
     canvasAria: 'Box diagram canvas',
+    canvasScrollAria: 'Canvas scroll area',
     canvasHint:
       'Click a box to select it, drag to move, or drag its bottom-right corner to resize. Everything here can also be done from the list on the right with a keyboard.',
 
@@ -70,6 +75,7 @@ export const ui = {
     // Stats
     statsHeading: 'Summary',
     statsBoxes: '{count} boxes detected',
+    statsHealed: '{count} border gaps auto-filled',
     statsSize: '{cols} × {rows} grid',
 
     // InstallPrompt
@@ -109,8 +115,12 @@ export const ui = {
     startOverConfirmConfirm: '別のものを貼り付ける',
     startOverConfirmCancel: 'キャンセル',
 
+    editorAria: '図のエディタ',
+    closeEditor: 'エディタを閉じる',
+
     canvasHeading: 'キャンバス',
     canvasAria: 'ボックス図のキャンバス',
+    canvasScrollAria: 'キャンバスのスクロール領域',
     canvasHint:
       'ボックスをクリックして選択し、ドラッグで移動、右下角をドラッグでリサイズできます。ここでの操作はすべて右側のリストからキーボードでも行えます。',
 
@@ -142,6 +152,7 @@ export const ui = {
 
     statsHeading: 'サマリー',
     statsBoxes: 'ボックス {count} 個を検出',
+    statsHealed: '罫線の隙間 {count} 箇所を自動補正',
     statsSize: '{cols} × {rows} グリッド',
 
     installHeading: 'アプリを追加',
@@ -178,8 +189,12 @@ export const ui = {
     startOverConfirmConfirm: '粘贴其他',
     startOverConfirmCancel: '取消',
 
+    editorAria: '示意图编辑器',
+    closeEditor: '关闭编辑器',
+
     canvasHeading: '画布',
     canvasAria: '方框示意图画布',
+    canvasScrollAria: '画布滚动区域',
     canvasHint: '点击方框以选中，拖动以移动，拖动右下角以调整大小。这里的所有操作也可以通过右侧列表用键盘完成。',
 
     inspectorHeading: '编辑',
@@ -210,6 +225,7 @@ export const ui = {
 
     statsHeading: '摘要',
     statsBoxes: '检测到 {count} 个方框',
+    statsHealed: '已自动修补 {count} 处边框缺口',
     statsSize: '{cols} × {rows} 网格',
 
     installHeading: '安装应用',
@@ -248,8 +264,12 @@ export const ui = {
     startOverConfirmConfirm: 'Anderes einfügen',
     startOverConfirmCancel: 'Abbrechen',
 
+    editorAria: 'Diagramm-Editor',
+    closeEditor: 'Editor schließen',
+
     canvasHeading: 'Zeichenfläche',
     canvasAria: 'Zeichenfläche für das Kästchendiagramm',
+    canvasScrollAria: 'Scrollbereich der Zeichenfläche',
     canvasHint:
       'Klicke auf ein Kästchen, um es auszuwählen, ziehe es zum Verschieben, oder ziehe an der unteren rechten Ecke, um es in der Größe zu ändern. Alles hier lässt sich auch über die Liste rechts per Tastatur erledigen.',
 
@@ -282,6 +302,7 @@ export const ui = {
 
     statsHeading: 'Zusammenfassung',
     statsBoxes: '{count} Kästchen erkannt',
+    statsHealed: '{count} Randlücken automatisch geschlossen',
     statsSize: '{cols} × {rows} Raster',
 
     installHeading: 'App installieren',
@@ -318,8 +339,12 @@ export const ui = {
     startOverConfirmConfirm: 'Pegar otro',
     startOverConfirmCancel: 'Cancelar',
 
+    editorAria: 'Editor del diagrama',
+    closeEditor: 'Cerrar el editor',
+
     canvasHeading: 'Lienzo',
     canvasAria: 'Lienzo del diagrama de cajas',
+    canvasScrollAria: 'Área de desplazamiento del lienzo',
     canvasHint:
       'Haz clic en una caja para seleccionarla, arrástrala para moverla, o arrastra su esquina inferior derecha para cambiar su tamaño. Todo esto también se puede hacer desde la lista de la derecha con el teclado.',
 
@@ -352,6 +377,7 @@ export const ui = {
 
     statsHeading: 'Resumen',
     statsBoxes: '{count} cajas detectadas',
+    statsHealed: '{count} huecos en el borde rellenados automáticamente',
     statsSize: 'cuadrícula de {cols} × {rows}',
 
     installHeading: 'Instalar la app',

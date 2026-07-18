@@ -28,8 +28,8 @@ import { DiagramInspector, type BoxListItem } from './DiagramInspector';
 import { ui, type UiStrings } from '@/i18n/ui';
 import { loadSettings, saveSettings } from '@/utils/settingsStorage';
 import { parseDiagram } from '@/lib/parse';
-import { bounds, type GridDoc } from '@/lib/grid';
-import { boxHeight, boxWidth, detectBoxes, smallestBoxAt, type Box } from '@/lib/detect';
+import { bounds, cloneDoc, setCell, type GridDoc } from '@/lib/grid';
+import { boxHeight, boxWidth, detectBoxesWithHealing, smallestBoxAt, type Box } from '@/lib/detect';
 import { addBox, boxText, defaultAddPosition, moveBox, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, removeBox, resizeBox, setBoxText } from '@/lib/ops';
 import { buildAiInstructionCopy } from '@/lib/aiCopy';
 
@@ -115,13 +115,31 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
 
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  // Read by the overlay's Escape handler (registered once per overlay open,
+  // below); a ref, not deps, so the listener doesn't churn on every
+  // keystroke/selection change.
+  const escapeRef = useRef<() => void>(() => {});
 
   // ---------------------------------------------------------------------
   // Derived grid state — always a synchronous re-parse of `code` (D16: no
   // worker; a diagram-sized grid is cheap to parse/detect/print).
+  //
+  // Tolerant detection: detectBoxesWithHealing treats an isolated single
+  // blank cell on a border edge as a healed pass-through (never two or more
+  // consecutive blanks — see detect.ts's module doc). `code` itself is left
+  // untouched by this (D13/"not silent rewriting" — see the informational
+  // notice below); healing is baked into the actual text only once the user
+  // edits a healed box (lib/ops.ts's healBorder).
   // ---------------------------------------------------------------------
   const doc = useMemo(() => parseDiagram(code), [code]);
-  const boxes = useMemo(() => detectBoxes(doc), [doc]);
+  const detailedBoxes = useMemo(() => detectBoxesWithHealing(doc), [doc]);
+  const boxes = useMemo(() => detailedBoxes.map((d) => d.box), [detailedBoxes]);
+  const healedCount = useMemo(() => {
+    const seen = new Set<string>();
+    for (const d of detailedBoxes) for (const h of d.healed) seen.add(`${h.x},${h.y}`);
+    return seen.size;
+  }, [detailedBoxes]);
   const selectedBox = useMemo(
     () => (selection ? (boxes.find((b) => b.x1 === selection.x && b.y1 === selection.y) ?? null) : null),
     [boxes, selection]
@@ -291,6 +309,21 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
   const renderCode = previewCode ?? code;
   const renderDoc = useMemo(() => parseDiagram(renderCode), [renderCode]);
 
+  // The canvas shows the healed version — intact borders, not literal gaps —
+  // as a purely visual/display concern, computed fresh from whatever's being
+  // rendered (the committed doc, or a live drag preview) so a box dragged
+  // partway through a healed border still looks whole while it moves. This
+  // clone is never fed back into `code`; see the derived-state comment above.
+  const displayDoc = useMemo(() => {
+    const detailed = detectBoxesWithHealing(renderDoc);
+    if (!detailed.some((d) => d.healed.length > 0)) return renderDoc;
+    const clone = cloneDoc(renderDoc);
+    for (const d of detailed) {
+      for (const h of d.healed) setCell(clone, h.x, h.y, { ch: h.ch, continuation: false });
+    }
+    return clone;
+  }, [renderDoc]);
+
   const renderSelectedBox = useMemo((): Box | null => {
     if (!dragPreview) return selectedBox;
     if (dragPreview.kind === 'move') {
@@ -345,6 +378,59 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
   const inspectorSelected = selectedBox ? { box: selectedBox, text: boxText(doc, selectedBox) } : null;
   const hasContent = code.trim() !== '';
 
+  // ---------------------------------------------------------------------
+  // Fullscreen editor overlay lifecycle (csv-viewer's takeover pattern —
+  // position:fixed escapes base.css's standalone-mode body width cap too).
+  //
+  // Closing = discarding the loaded diagram and returning to the paste
+  // screen. Unlike csv-viewer (a read-only viewer, Escape discards
+  // outright), this tool holds user *edits* — so closing routes through the
+  // existing start-over confirm dialog whenever the current code differs
+  // from the imported original, and only closes silently when nothing was
+  // edited.
+  // ---------------------------------------------------------------------
+
+  const requestClose = () => {
+    if (code !== importedCode) setConfirmAction('startOver');
+    else performStartOver();
+  };
+
+  // Escape semantics, kept current via the ref without re-binding the
+  // listener each render: a confirm dialog open means this Escape dismisses
+  // the DIALOG (idempotent with AppModal's own Escape handler — the dialog's
+  // effect-registered listener may not exist yet in the first frame after
+  // opening, and may also fire on the same event; both paths just set
+  // confirmAction to null); no dialog open means it asks to close the editor.
+  const currentConfirmAction = confirmAction;
+  escapeRef.current = () => {
+    if (currentConfirmAction !== null) setConfirmAction(null);
+    else requestClose();
+  };
+
+  useEffect(() => {
+    if (!hasContent) return;
+    overlayRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      escapeRef.current();
+    };
+    // Capture phase, deliberately: microtask checkpoints run between the
+    // listeners of a single event dispatch, so with a bubble-phase listener
+    // AppModal's document-level Escape handler (which closes the dialog)
+    // could flush a re-render before this handler ran on the same keypress —
+    // making this handler see "no dialog open" and instantly re-open the
+    // dialog it just closed. In the capture phase this handler always runs
+    // first, before any state update from this event has been flushed.
+    window.addEventListener('keydown', onKeyDown, true);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [hasContent]);
+
   return (
     <div>
       {!hasContent && (
@@ -388,13 +474,17 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
       )}
 
       {hasContent && (
-        <div data-testid="editor">
-          <AppCard>
-            <div
-              style="display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; margin-bottom: var(--space-4);"
-              role="toolbar"
-              aria-label={t.inspectorHeading}
-            >
+        <div
+          class="ascii-fs"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t.editorAria}
+          ref={overlayRef}
+          tabIndex={-1}
+          data-testid="editor"
+        >
+          <div class="ascii-fs__inner">
+            <div class="ascii-fs__toolbar" role="toolbar" aria-label={t.inspectorHeading}>
               <button id="add-box-action" type="button" class="app-button app-button--secondary" onClick={handleAddBox}>
                 {t.addBoxAction}
               </button>
@@ -413,33 +503,47 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
               <button id="reset-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('reset')}>
                 {t.reset}
               </button>
-              <button id="start-over-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('startOver')}>
-                {t.startOver}
+              <button
+                id="close-editor-action"
+                type="button"
+                class="ascii-fs-close"
+                onClick={requestClose}
+                aria-label={t.closeEditor}
+                title={t.closeEditor}
+                data-testid="close-editor"
+              >
+                <kbd class="ascii-fs-close__kbd">ESC</kbd>
+                <span class="ascii-fs-close__x" aria-hidden="true">
+                  ×
+                </span>
               </button>
             </div>
 
-            <div style="display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: flex-start;">
-              <div style="flex: 2 1 420px; min-width: 280px;">
-                <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.canvasHeading}</h3>
-                <p style="font-size: var(--fs-1); color: var(--color-subtle); margin: 0 0 var(--space-2) 0;">{t.canvasHint}</p>
-                <div data-testid="diagram-canvas" style="overflow: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-2);">
-                  <DiagramCanvas
-                    doc={renderDoc}
-                    gridWidth={gridWidth}
-                    gridHeight={gridHeight}
-                    boxes={boxes}
-                    selectedBox={renderSelectedBox}
-                    ariaLabel={t.canvasAria}
-                    onSelectAt={handleSelectAt}
-                    onDragMove={handleDragMove}
-                    onDragResize={handleDragResize}
-                    onDragEnd={handleDragEnd}
-                  />
-                </div>
+            <div class="ascii-fs__main">
+              <div
+                class="ascii-fs__canvas"
+                data-testid="diagram-canvas"
+                role="region"
+                aria-label={t.canvasScrollAria}
+                tabIndex={0}
+              >
+                <DiagramCanvas
+                  doc={displayDoc}
+                  gridWidth={gridWidth}
+                  gridHeight={gridHeight}
+                  boxes={boxes}
+                  selectedBox={renderSelectedBox}
+                  ariaLabel={t.canvasAria}
+                  onSelectAt={handleSelectAt}
+                  onDragMove={handleDragMove}
+                  onDragResize={handleDragResize}
+                  onDragEnd={handleDragEnd}
+                />
               </div>
 
-              <div style="flex: 1 1 260px; min-width: 240px;">
+              <div class="ascii-fs__side">
                 <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.inspectorHeading}</h3>
+                <p style="font-size: var(--fs-1); color: var(--color-subtle); margin: 0 0 var(--space-2) 0;">{t.canvasHint}</p>
                 <DiagramInspector
                   items={items}
                   selected={inspectorSelected}
@@ -452,54 +556,56 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
                 />
               </div>
             </div>
-          </AppCard>
 
-          <AppCard className="mt-6">
-            <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.codeHeading}</h3>
-            <p style="margin: 0 0 var(--space-2) 0; font-size: var(--fs-1); color: var(--color-subtle);">{t.codeHint}</p>
-            <label class="visually-hidden" for="code-pane">
-              {t.codeLabel}
-            </label>
-            <textarea
-              id="code-pane"
-              data-testid="code-pane"
-              class="app-field__textarea"
-              style="width: 100%; min-height: 200px; font-family: var(--font-mono, monospace); font-size: var(--fs-2);"
-              value={code}
-              spellcheck={false}
-              onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
-            />
-          </AppCard>
+            <div class="ascii-fs__bottom">
+              <div class="ascii-fs__code">
+                <label class="ascii-fs__strip-heading" for="code-pane">
+                  {t.codeHeading}
+                </label>
+                <textarea
+                  id="code-pane"
+                  data-testid="code-pane"
+                  class="app-field__textarea ascii-fs__code-pane"
+                  value={code}
+                  spellcheck={false}
+                  onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
+                />
+              </div>
 
-          <AppCard className="mt-6">
-            <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-3) 0;">{t.outputHeading}</h3>
-            <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">
-              <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
-                {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
-              </button>
-              <button
-                id="copy-for-ai-action"
-                type="button"
-                class="app-button app-button--secondary"
-                onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
-              >
-                {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
-              </button>
-              <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
-                {t.downloadTxt}
-              </button>
+              <div class="ascii-fs__actions">
+                <h3 class="ascii-fs__strip-heading">{t.outputHeading}</h3>
+                <div class="ascii-fs__buttons">
+                  <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
+                    {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
+                  </button>
+                  <button
+                    id="copy-for-ai-action"
+                    type="button"
+                    class="app-button app-button--secondary"
+                    onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
+                  >
+                    {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
+                  </button>
+                  <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
+                    {t.downloadTxt}
+                  </button>
+                </div>
+                <p class="ascii-fs__stats" role="status">
+                  <span data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</span>
+                  {healedCount > 0 && (
+                    <>
+                      {' · '}
+                      <span data-testid="stats-healed">{t.statsHealed.replace('{count}', String(healedCount))}</span>
+                    </>
+                  )}
+                  {' · '}
+                  <span data-testid="stats-size">
+                    {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
+                  </span>
+                </p>
+              </div>
             </div>
-          </AppCard>
-
-          <AppCard className="mt-6">
-            <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.statsHeading}</h3>
-            <ul style="margin: 0; padding-left: 1.2em; font-size: var(--fs-2); color: var(--color-subtle);">
-              <li data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</li>
-              <li data-testid="stats-size">
-                {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
-              </li>
-            </ul>
-          </AppCard>
+          </div>
         </div>
       )}
 
@@ -528,6 +634,147 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
       </AppModal>
 
       <style>{`
+        /* Fullscreen takeover (csv-viewer's .csv-viewer-fs pattern — same
+           z-index tier, background, and reduced-motion handling).
+           position:fixed is viewport-relative, so it also escapes base.css's
+           @media (display-mode: standalone) body { max-width: 500px } cap. */
+        .ascii-fs {
+          position: fixed;
+          inset: 0;
+          z-index: 900;
+          display: flex;
+          overflow: hidden;
+          background-color: var(--color-bg);
+          animation: asciiFsIn var(--dur-mid) var(--ease);
+        }
+        .ascii-fs:focus {
+          outline: none;
+        }
+        @keyframes asciiFsIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ascii-fs {
+            animation: none;
+          }
+        }
+        .ascii-fs__inner {
+          display: flex;
+          flex-direction: column;
+          width: 100%;
+          height: 100%;
+          box-sizing: border-box;
+          padding: var(--space-4);
+          gap: var(--space-3);
+        }
+        .ascii-fs__toolbar {
+          display: flex;
+          gap: var(--space-2);
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        .ascii-fs-close {
+          margin-left: auto;
+          display: inline-flex;
+          align-items: center;
+          gap: var(--space-2);
+          height: 40px;
+          padding: 0 var(--space-3);
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-sm);
+          background-color: var(--color-surface);
+          color: var(--color-text);
+          font: inherit;
+          cursor: pointer;
+        }
+        .ascii-fs-close:hover {
+          border-color: var(--color-danger);
+          background-color: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+        }
+        .ascii-fs-close__kbd {
+          font-size: var(--fs-1);
+          color: var(--color-subtle);
+        }
+        .ascii-fs-close__x {
+          font-size: var(--fs-4);
+          line-height: 1;
+        }
+        /* The canvas + inspector row fills all height left over by the
+           toolbar and the bottom strip; min-height:0 lets the inner
+           scrollbars (not the page) handle overflow. */
+        .ascii-fs__main {
+          display: flex;
+          gap: var(--space-3);
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+        .ascii-fs__canvas {
+          flex: 1 1 auto;
+          min-width: 0;
+          overflow: auto;
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-sm);
+          padding: var(--space-2);
+        }
+        .ascii-fs__side {
+          flex: 0 0 300px;
+          min-height: 0;
+          overflow-y: auto;
+          padding-right: var(--space-1);
+        }
+        .ascii-fs__bottom {
+          display: flex;
+          gap: var(--space-4);
+          flex-wrap: wrap;
+          align-items: stretch;
+        }
+        .ascii-fs__code {
+          flex: 1 1 380px;
+          min-width: 240px;
+          display: flex;
+          flex-direction: column;
+          gap: var(--space-1);
+        }
+        .ascii-fs__code-pane {
+          width: 100%;
+          height: 110px;
+          resize: vertical;
+          font-family: var(--font-mono, monospace);
+          font-size: var(--fs-2);
+        }
+        .ascii-fs__actions {
+          flex: 0 1 auto;
+          display: flex;
+          flex-direction: column;
+          gap: var(--space-1);
+        }
+        .ascii-fs__strip-heading {
+          font-size: var(--fs-1);
+          font-weight: 600;
+          color: var(--color-subtle);
+          margin: 0;
+        }
+        .ascii-fs__buttons {
+          display: flex;
+          gap: var(--space-2);
+          flex-wrap: wrap;
+        }
+        .ascii-fs__stats {
+          margin: 0;
+          font-size: var(--fs-1);
+          color: var(--color-subtle);
+        }
+        /* Mobile: stack canvas over inspector; each keeps its own scrollbar. */
+        @media (max-width: 720px) {
+          .ascii-fs__main {
+            flex-direction: column;
+          }
+          .ascii-fs__side {
+            flex: 0 0 auto;
+            max-height: 40%;
+          }
+        }
         .ascii-canvas {
           position: relative;
           display: inline-block;

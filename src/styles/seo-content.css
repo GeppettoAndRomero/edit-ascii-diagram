@@ -1,10 +1,7 @@
 /* SEOコンテンツ用スタイル */
 
-/* SEOコンテンツ全体のコンテナ。main は .workspace で画面幅いっぱいに広がるが、
-   説明文は読みやすい幅に再度絞る。 */
+/* SEOコンテンツ全体のコンテナ */
 .seo-content {
-  max-width: 720px;
-  margin-inline: auto;
   margin-top: var(--space-8);
   padding-top: var(--space-8);
   border-top: 1px solid var(--color-border);
