@@ -10,7 +10,7 @@
 
   # Content Security Policy
   # Web Worker、Blob、インラインスタイル、zip.jsに対応
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-WN0hqek1jEauhlhWVVXeQPa5BD3f0rsMdmwSZtw1Cys=' 'sha256-fsuORQvazUKghfjX0uf0u7S+R85+GTQx1BymnQE48Wg=' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 # ハッシュ付きバンドルだけ immutable にする。
 # 注意: Cloudflare の _headers は同一ヘッダ名を「結合」するため、immutable を /* に
@@ -30,10 +30,5 @@
 
 # Post-cutover: the router strips this on runlocally.app, so only the *.pages.dev
 # origin is noindexed (apex is the sole indexable surface).
-/edit-ascii-diagram/*
-  X-Robots-Tag: noindex
-
-# Router-fronted tool: the *.pages.dev origin is noindex; the front-router strips
-# X-Robots-Tag on runlocally.app responses so the apex is the only indexed surface.
 /edit-ascii-diagram/*
   X-Robots-Tag: noindex
