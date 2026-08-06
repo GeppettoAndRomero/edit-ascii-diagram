@@ -7,6 +7,24 @@ test.describe('covenants', () => {
     test.skip(testInfo.project.name !== 'chromium', 'service-worker dependent (chromium only)');
   });
 
+  test('links to related tools and its own engineering-notes article (#177)', async ({ page }) => {
+    await page.goto('/edit-ascii-diagram/');
+    const cards = page.locator('.related-tools-grid a.related-tool-card');
+    const count = await cards.count();
+    expect(count).toBeGreaterThanOrEqual(1);
+    expect(count).toBeLessThanOrEqual(5);
+    for (let i = 0; i < count; i++) {
+      const href = await cards.nth(i).getAttribute('href');
+      expect(href, `related card ${i} href`).toMatch(/^https:\/\/runlocally\.app\/[a-z0-9-]+\/$/);
+      expect(href, `related card ${i} is not a self-link`).not.toContain('/edit-ascii-diagram/');
+      await expect(cards.nth(i), `related card ${i} has discernible link text`).not.toHaveText('');
+    }
+    const blogLink = page.locator('.related-tools-blog-link a');
+    if (await blogLink.count()) {
+      await expect(blogLink).toHaveAttribute('href', /^https:\/\/runlocally\.app\/blog\/edit-ascii-diagram\/$/);
+    }
+  });
+
   test('makes no cross-origin request while loading and editing (#1)', async ({ page }) => {
     const external: string[] = [];
     page.on('request', (req) => {
