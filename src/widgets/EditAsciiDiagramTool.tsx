@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { AppCard } from './AppCard';
 import { AppModal } from './AppModal';
+import { FullscreenShell } from './FullscreenShell';
 import { DiagramCanvas } from './DiagramCanvas';
 import { DiagramInspector, type BoxListItem } from './DiagramInspector';
 import { ui, type UiStrings } from '@/i18n/ui';
@@ -115,11 +116,6 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
 
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
-  // Read by the overlay's Escape handler (registered once per overlay open,
-  // below); a ref, not deps, so the listener doesn't churn on every
-  // keystroke/selection change.
-  const escapeRef = useRef<() => void>(() => {});
 
   // ---------------------------------------------------------------------
   // Derived grid state — always a synchronous re-parse of `code` (D16: no
@@ -379,15 +375,18 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
   const hasContent = code.trim() !== '';
 
   // ---------------------------------------------------------------------
-  // Fullscreen editor overlay lifecycle (csv-viewer's takeover pattern —
-  // position:fixed escapes base.css's standalone-mode body width cap too).
+  // Fullscreen editor overlay lifecycle. FullscreenShell (frozen, #116) owns
+  // the takeover chrome itself: position:fixed, dialog semantics, focus,
+  // body-scroll lock, and the capture-phase Escape listener (needed so this
+  // fires before AppModal's own bubble-phase Escape handler on the same
+  // keypress — see FullscreenShell's doc comment). It only calls
+  // `onRequestClose`; this tool decides what "close" means right now.
   //
   // Closing = discarding the loaded diagram and returning to the paste
-  // screen. Unlike csv-viewer (a read-only viewer, Escape discards
-  // outright), this tool holds user *edits* — so closing routes through the
-  // existing start-over confirm dialog whenever the current code differs
-  // from the imported original, and only closes silently when nothing was
-  // edited.
+  // screen. Unlike a read-only viewer (Escape can discard outright), this
+  // tool holds user *edits* — so closing routes through the existing
+  // start-over confirm dialog whenever the current code differs from the
+  // imported original, and only closes silently when nothing was edited.
   // ---------------------------------------------------------------------
 
   const requestClose = () => {
@@ -395,41 +394,16 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
     else performStartOver();
   };
 
-  // Escape semantics, kept current via the ref without re-binding the
-  // listener each render: a confirm dialog open means this Escape dismisses
-  // the DIALOG (idempotent with AppModal's own Escape handler — the dialog's
-  // effect-registered listener may not exist yet in the first frame after
-  // opening, and may also fire on the same event; both paths just set
-  // confirmAction to null); no dialog open means it asks to close the editor.
-  const currentConfirmAction = confirmAction;
-  escapeRef.current = () => {
-    if (currentConfirmAction !== null) setConfirmAction(null);
+  // A confirm dialog (reset OR start-over) already open means this instead
+  // dismisses the DIALOG (idempotent with AppModal's own Escape handler —
+  // both paths just set confirmAction to null); no dialog open means it asks
+  // to close the editor. Recomputed fresh every render (FullscreenShell
+  // reads it through a ref internally, so this doesn't need its own
+  // useCallback to stay current).
+  const handleRequestClose = () => {
+    if (confirmAction !== null) setConfirmAction(null);
     else requestClose();
   };
-
-  useEffect(() => {
-    if (!hasContent) return;
-    overlayRef.current?.focus();
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.preventDefault();
-      escapeRef.current();
-    };
-    // Capture phase, deliberately: microtask checkpoints run between the
-    // listeners of a single event dispatch, so with a bubble-phase listener
-    // AppModal's document-level Escape handler (which closes the dialog)
-    // could flush a re-render before this handler ran on the same keypress —
-    // making this handler see "no dialog open" and instantly re-open the
-    // dialog it just closed. In the capture phase this handler always runs
-    // first, before any state update from this event has been flushed.
-    window.addEventListener('keydown', onKeyDown, true);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [hasContent]);
 
   return (
     <div>
@@ -474,139 +448,122 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
       )}
 
       {hasContent && (
-        <div
-          class="ascii-fs"
-          role="dialog"
-          aria-modal="true"
-          aria-label={t.editorAria}
-          ref={overlayRef}
-          tabIndex={-1}
-          data-testid="editor"
+        <FullscreenShell
+          open={hasContent}
+          onRequestClose={handleRequestClose}
+          label={t.editorAria}
+          closeLabel={t.closeEditor}
+          testId="editor"
+          closeTestId="close-editor"
         >
-          <div class="ascii-fs__inner">
-            <div class="ascii-fs__toolbar" role="toolbar" aria-label={t.inspectorHeading}>
-              <button id="add-box-action" type="button" class="app-button app-button--secondary" onClick={handleAddBox}>
-                {t.addBoxAction}
-              </button>
-              <button id="undo-action" type="button" class="app-button app-button--ghost" disabled={history.index <= 0} onClick={undo}>
-                {t.undo}
-              </button>
-              <button
-                id="redo-action"
-                type="button"
-                class="app-button app-button--ghost"
-                disabled={history.index >= history.stack.length - 1}
-                onClick={redo}
-              >
-                {t.redo}
-              </button>
-              <button id="reset-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('reset')}>
-                {t.reset}
-              </button>
-              <button
-                id="close-editor-action"
-                type="button"
-                class="ascii-fs-close"
-                onClick={requestClose}
-                aria-label={t.closeEditor}
-                title={t.closeEditor}
-                data-testid="close-editor"
-              >
-                <kbd class="ascii-fs-close__kbd">ESC</kbd>
-                <span class="ascii-fs-close__x" aria-hidden="true">
-                  ×
-                </span>
-              </button>
+          <div class="ascii-fs__toolbar" role="toolbar" aria-label={t.inspectorHeading}>
+            <button id="add-box-action" type="button" class="app-button app-button--secondary" onClick={handleAddBox}>
+              {t.addBoxAction}
+            </button>
+            <button id="undo-action" type="button" class="app-button app-button--ghost" disabled={history.index <= 0} onClick={undo}>
+              {t.undo}
+            </button>
+            <button
+              id="redo-action"
+              type="button"
+              class="app-button app-button--ghost"
+              disabled={history.index >= history.stack.length - 1}
+              onClick={redo}
+            >
+              {t.redo}
+            </button>
+            <button id="reset-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('reset')}>
+              {t.reset}
+            </button>
+          </div>
+
+          <div class="ascii-fs__main">
+            <div
+              class="ascii-fs__canvas"
+              data-testid="diagram-canvas"
+              role="region"
+              aria-label={t.canvasScrollAria}
+              tabIndex={0}
+            >
+              <DiagramCanvas
+                doc={displayDoc}
+                gridWidth={gridWidth}
+                gridHeight={gridHeight}
+                boxes={boxes}
+                selectedBox={renderSelectedBox}
+                ariaLabel={t.canvasAria}
+                onSelectAt={handleSelectAt}
+                onDragMove={handleDragMove}
+                onDragResize={handleDragResize}
+                onDragEnd={handleDragEnd}
+              />
             </div>
 
-            <div class="ascii-fs__main">
-              <div
-                class="ascii-fs__canvas"
-                data-testid="diagram-canvas"
-                role="region"
-                aria-label={t.canvasScrollAria}
-                tabIndex={0}
-              >
-                <DiagramCanvas
-                  doc={displayDoc}
-                  gridWidth={gridWidth}
-                  gridHeight={gridHeight}
-                  boxes={boxes}
-                  selectedBox={renderSelectedBox}
-                  ariaLabel={t.canvasAria}
-                  onSelectAt={handleSelectAt}
-                  onDragMove={handleDragMove}
-                  onDragResize={handleDragResize}
-                  onDragEnd={handleDragEnd}
-                />
-              </div>
-
-              <div class="ascii-fs__side">
-                <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.inspectorHeading}</h3>
-                <p style="font-size: var(--fs-1); color: var(--color-subtle); margin: 0 0 var(--space-2) 0;">{t.canvasHint}</p>
-                <DiagramInspector
-                  items={items}
-                  selected={inspectorSelected}
-                  onSelect={(box) => setSelection(box ? { x: box.x1, y: box.y1 } : null)}
-                  onMove={handleMove}
-                  onResize={handleResize}
-                  onTextChange={handleTextChange}
-                  onDelete={handleDelete}
-                  t={t}
-                />
-              </div>
-            </div>
-
-            <div class="ascii-fs__bottom">
-              <div class="ascii-fs__code">
-                <label class="ascii-fs__strip-heading" for="code-pane">
-                  {t.codeHeading}
-                </label>
-                <textarea
-                  id="code-pane"
-                  data-testid="code-pane"
-                  class="app-field__textarea ascii-fs__code-pane"
-                  value={code}
-                  spellcheck={false}
-                  onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
-                />
-              </div>
-
-              <div class="ascii-fs__actions">
-                <h3 class="ascii-fs__strip-heading">{t.outputHeading}</h3>
-                <div class="ascii-fs__buttons">
-                  <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
-                    {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
-                  </button>
-                  <button
-                    id="copy-for-ai-action"
-                    type="button"
-                    class="app-button app-button--secondary"
-                    onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
-                  >
-                    {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
-                  </button>
-                  <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
-                    {t.downloadTxt}
-                  </button>
-                </div>
-                <p class="ascii-fs__stats" role="status">
-                  <span data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</span>
-                  {healedCount > 0 && (
-                    <>
-                      {' · '}
-                      <span data-testid="stats-healed">{t.statsHealed.replace('{count}', String(healedCount))}</span>
-                    </>
-                  )}
-                  {' · '}
-                  <span data-testid="stats-size">
-                    {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
-                  </span>
-                </p>
-              </div>
+            <div class="ascii-fs__side">
+              <h3 style="font-size: var(--fs-3); margin: 0 0 var(--space-2) 0;">{t.inspectorHeading}</h3>
+              <p style="font-size: var(--fs-1); color: var(--color-subtle); margin: 0 0 var(--space-2) 0;">{t.canvasHint}</p>
+              <DiagramInspector
+                items={items}
+                selected={inspectorSelected}
+                onSelect={(box) => setSelection(box ? { x: box.x1, y: box.y1 } : null)}
+                onMove={handleMove}
+                onResize={handleResize}
+                onTextChange={handleTextChange}
+                onDelete={handleDelete}
+                t={t}
+              />
             </div>
           </div>
-        </div>
+
+          <div class="ascii-fs__bottom">
+            <div class="ascii-fs__code">
+              <label class="ascii-fs__strip-heading" for="code-pane">
+                {t.codeHeading}
+              </label>
+              <textarea
+                id="code-pane"
+                data-testid="code-pane"
+                class="app-field__textarea ascii-fs__code-pane"
+                value={code}
+                spellcheck={false}
+                onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
+              />
+            </div>
+
+            <div class="ascii-fs__actions">
+              <h3 class="ascii-fs__strip-heading">{t.outputHeading}</h3>
+              <div class="ascii-fs__buttons">
+                <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
+                  {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
+                </button>
+                <button
+                  id="copy-for-ai-action"
+                  type="button"
+                  class="app-button app-button--secondary"
+                  onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
+                >
+                  {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
+                </button>
+                <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
+                  {t.downloadTxt}
+                </button>
+              </div>
+              <p class="ascii-fs__stats" role="status">
+                <span data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</span>
+                {healedCount > 0 && (
+                  <>
+                    {' · '}
+                    <span data-testid="stats-healed">{t.statsHealed.replace('{count}', String(healedCount))}</span>
+                  </>
+                )}
+                {' · '}
+                <span data-testid="stats-size">
+                  {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
+                </span>
+              </p>
+            </div>
+          </div>
+        </FullscreenShell>
       )}
 
       <AppModal isOpen={confirmAction === 'reset'} onClose={() => setConfirmAction(null)} title={t.resetConfirmTitle} locale={locale}>
@@ -634,71 +591,16 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
       </AppModal>
 
       <style>{`
-        /* Fullscreen takeover (csv-viewer's .csv-viewer-fs pattern — same
-           z-index tier, background, and reduced-motion handling).
-           position:fixed is viewport-relative, so it also escapes base.css's
-           @media (display-mode: standalone) body { max-width: 500px } cap. */
-        .ascii-fs {
-          position: fixed;
-          inset: 0;
-          z-index: 900;
-          display: flex;
-          overflow: hidden;
-          background-color: var(--color-bg);
-          animation: asciiFsIn var(--dur-mid) var(--ease);
-        }
-        .ascii-fs:focus {
-          outline: none;
-        }
-        @keyframes asciiFsIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .ascii-fs {
-            animation: none;
-          }
-        }
-        .ascii-fs__inner {
-          display: flex;
-          flex-direction: column;
-          width: 100%;
-          height: 100%;
-          box-sizing: border-box;
-          padding: var(--space-4);
-          gap: var(--space-3);
-        }
+        /* The fullscreen takeover itself (position:fixed overlay, dialog
+           semantics, focus/scroll-lock/Escape, the ESC/× close control) is
+           the frozen FullscreenShell primitive — see
+           src/widgets/FullscreenShell.tsx and src/styles/components.css.
+           These rules only lay out what this tool passes as its children. */
         .ascii-fs__toolbar {
           display: flex;
           gap: var(--space-2);
           flex-wrap: wrap;
           align-items: center;
-        }
-        .ascii-fs-close {
-          margin-left: auto;
-          display: inline-flex;
-          align-items: center;
-          gap: var(--space-2);
-          height: 40px;
-          padding: 0 var(--space-3);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-sm);
-          background-color: var(--color-surface);
-          color: var(--color-text);
-          font: inherit;
-          cursor: pointer;
-        }
-        .ascii-fs-close:hover {
-          border-color: var(--color-danger);
-          background-color: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
-        }
-        .ascii-fs-close__kbd {
-          font-size: var(--fs-1);
-          color: var(--color-subtle);
-        }
-        .ascii-fs-close__x {
-          font-size: var(--fs-4);
-          line-height: 1;
         }
         /* The canvas + inspector row fills all height left over by the
            toolbar and the bottom strip; min-height:0 lets the inner
