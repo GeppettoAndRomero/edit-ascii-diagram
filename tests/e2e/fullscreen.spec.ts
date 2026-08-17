@@ -70,6 +70,10 @@ test.describe('fullscreen editor overlay', () => {
     await page.goto('/edit-ascii-diagram/');
     await waitReady(page);
     await loadSample(page);
+    // Below the hamburger breakpoint, add-box lives in the collapsible
+    // bottom-bar menu — open it first (see #189).
+    const toggle = page.getByTestId('bottombar-toggle');
+    if (await toggle.isVisible()) await toggle.click();
     await page.click('#add-box-action'); // a real edit — code now differs from the imported original
 
     await page.keyboard.press('Escape');
@@ -100,10 +104,30 @@ test.describe('fullscreen editor overlay', () => {
 
     // With edits: confirm dialog.
     await loadSample(page);
+    // Below the hamburger breakpoint, add-box lives in the collapsible
+    // bottom-bar menu — open it first (see #189).
+    const toggle = page.getByTestId('bottombar-toggle');
+    if (await toggle.isVisible()) await toggle.click();
     await page.click('#add-box-action');
     await page.click('[data-testid="close-editor"]');
     await expect(page.locator('#confirm-start-over-action')).toBeVisible();
     await page.click('#confirm-start-over-action');
     await expect(page.locator('[data-testid="editor"]')).toHaveCount(0);
+  });
+
+  test('the bottom-bar menu collapses behind a hamburger toggle on narrow viewports', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 700 });
+    await page.goto('/edit-ascii-diagram/');
+    await waitReady(page);
+    await loadSample(page);
+
+    const details = page.getByTestId('code-pane');
+    await expect(details).not.toBeVisible();
+
+    const toggle = page.getByTestId('bottombar-toggle');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(details).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 });

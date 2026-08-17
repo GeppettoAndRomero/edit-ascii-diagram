@@ -113,6 +113,8 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
   const [confirmAction, setConfirmAction] = useState<'reset' | 'startOver' | null>(null);
   const [copiedButton, setCopiedButton] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
+  // Narrow-viewport bottom-bar menu (stats + secondary tools + code pane) toggle.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -368,6 +370,7 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
     setImportedCode('');
     setCode('');
     setHistory({ stack: [''], index: 0 });
+    setMenuOpen(false);
   };
 
   const items: BoxListItem[] = boxes.map((box) => ({ box, label: boxLabel(doc, box, t) }));
@@ -455,28 +458,93 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
           closeLabel={t.closeEditor}
           testId="editor"
           closeTestId="close-editor"
-        >
-          <div class="ascii-fs__toolbar" role="toolbar" aria-label={t.inspectorHeading}>
-            <button id="add-box-action" type="button" class="app-button app-button--secondary" onClick={handleAddBox}>
-              {t.addBoxAction}
-            </button>
-            <button id="undo-action" type="button" class="app-button app-button--ghost" disabled={history.index <= 0} onClick={undo}>
-              {t.undo}
-            </button>
-            <button
-              id="redo-action"
-              type="button"
-              class="app-button app-button--ghost"
-              disabled={history.index >= history.stack.length - 1}
-              onClick={redo}
-            >
-              {t.redo}
-            </button>
-            <button id="reset-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('reset')}>
-              {t.reset}
-            </button>
-          </div>
+          bottomBar={
+            <div class="ascii-fs__bottombar">
+              <div
+                class={menuOpen ? 'ascii-fs__bottombar-details is-open' : 'ascii-fs__bottombar-details'}
+                id="ascii-fs-bottombar-details"
+              >
+                <p class="ascii-fs__stats" role="status">
+                  <span data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</span>
+                  {healedCount > 0 && (
+                    <>
+                      {' · '}
+                      <span data-testid="stats-healed">{t.statsHealed.replace('{count}', String(healedCount))}</span>
+                    </>
+                  )}
+                  {' · '}
+                  <span data-testid="stats-size">
+                    {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
+                  </span>
+                </p>
 
+                <div class="ascii-fs__bottombar-tools">
+                  <button id="add-box-action" type="button" class="app-button app-button--secondary" onClick={handleAddBox}>
+                    {t.addBoxAction}
+                  </button>
+                  <button
+                    id="redo-action"
+                    type="button"
+                    class="app-button app-button--ghost"
+                    disabled={history.index >= history.stack.length - 1}
+                    onClick={redo}
+                  >
+                    {t.redo}
+                  </button>
+                  <button id="reset-action" type="button" class="app-button app-button--ghost" onClick={() => setConfirmAction('reset')}>
+                    {t.reset}
+                  </button>
+                  <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
+                    {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
+                  </button>
+                  <button
+                    id="copy-for-ai-action"
+                    type="button"
+                    class="app-button app-button--secondary"
+                    onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
+                  >
+                    {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
+                  </button>
+                </div>
+
+                <div class="ascii-fs__code">
+                  <label class="ascii-fs__strip-heading" for="code-pane">
+                    {t.codeHeading}
+                  </label>
+                  <textarea
+                    id="code-pane"
+                    data-testid="code-pane"
+                    class="app-field__textarea ascii-fs__code-pane"
+                    value={code}
+                    spellcheck={false}
+                    onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
+                  />
+                </div>
+              </div>
+
+              <div class="ascii-fs__bottombar-row">
+                <button
+                  type="button"
+                  class="ascii-fs__bottombar-toggle"
+                  data-testid="bottombar-toggle"
+                  aria-expanded={menuOpen}
+                  aria-controls="ascii-fs-bottombar-details"
+                  onClick={() => setMenuOpen((o) => !o)}
+                >
+                  <span aria-hidden="true">☰</span>
+                  <span class="visually-hidden">{t.moreOptions}</span>
+                </button>
+
+                <button id="undo-action" type="button" class="app-button app-button--ghost" disabled={history.index <= 0} onClick={undo}>
+                  {t.undo}
+                </button>
+                <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
+                  {t.downloadTxt}
+                </button>
+              </div>
+            </div>
+          }
+        >
           <div class="ascii-fs__main">
             <div
               class="ascii-fs__canvas"
@@ -514,55 +582,6 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
               />
             </div>
           </div>
-
-          <div class="ascii-fs__bottom">
-            <div class="ascii-fs__code">
-              <label class="ascii-fs__strip-heading" for="code-pane">
-                {t.codeHeading}
-              </label>
-              <textarea
-                id="code-pane"
-                data-testid="code-pane"
-                class="app-field__textarea ascii-fs__code-pane"
-                value={code}
-                spellcheck={false}
-                onInput={(e) => commitCodeDebounced((e.currentTarget as HTMLTextAreaElement).value)}
-              />
-            </div>
-
-            <div class="ascii-fs__actions">
-              <h3 class="ascii-fs__strip-heading">{t.outputHeading}</h3>
-              <div class="ascii-fs__buttons">
-                <button id="copy-text-action" type="button" class="app-button app-button--secondary" onClick={() => void copyText(code, 'copy-text-action')}>
-                  {copiedButton === 'copy-text-action' ? t.copied : t.copyText}
-                </button>
-                <button
-                  id="copy-for-ai-action"
-                  type="button"
-                  class="app-button app-button--secondary"
-                  onClick={() => void copyText(buildAiInstructionCopy(t.aiCopyIntro, importedCode, code), 'copy-for-ai-action')}
-                >
-                  {copiedButton === 'copy-for-ai-action' ? t.copied : t.copyForAI}
-                </button>
-                <button id="download-txt-action" type="button" class="app-button app-button--primary" onClick={() => void downloadTxt(code)}>
-                  {t.downloadTxt}
-                </button>
-              </div>
-              <p class="ascii-fs__stats" role="status">
-                <span data-testid="stats-boxes">{t.statsBoxes.replace('{count}', String(boxes.length))}</span>
-                {healedCount > 0 && (
-                  <>
-                    {' · '}
-                    <span data-testid="stats-healed">{t.statsHealed.replace('{count}', String(healedCount))}</span>
-                  </>
-                )}
-                {' · '}
-                <span data-testid="stats-size">
-                  {t.statsSize.replace('{cols}', String(bounds(doc).maxX + 1)).replace('{rows}', String(doc.rowCount))}
-                </span>
-              </p>
-            </div>
-          </div>
         </FullscreenShell>
       )}
 
@@ -595,16 +614,12 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
            semantics, focus/scroll-lock/Escape, the ESC/× close control) is
            the frozen FullscreenShell primitive — see
            src/widgets/FullscreenShell.tsx and src/styles/components.css.
-           These rules only lay out what this tool passes as its children. */
-        .ascii-fs__toolbar {
-          display: flex;
-          gap: var(--space-2);
-          flex-wrap: wrap;
-          align-items: center;
-        }
+           These rules only lay out what this tool passes as FullscreenShell's
+           children (the canvas + inspector) and bottomBar (stats, secondary
+           tools, the code pane, and the always-visible undo/download row). */
         /* The canvas + inspector row fills all height left over by the
-           toolbar and the bottom strip; min-height:0 lets the inner
-           scrollbars (not the page) handle overflow. */
+           bottom bar; min-height:0 lets the inner scrollbars (not the page)
+           handle overflow. */
         .ascii-fs__main {
           display: flex;
           gap: var(--space-3);
@@ -625,11 +640,96 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
           overflow-y: auto;
           padding-right: var(--space-1);
         }
-        .ascii-fs__bottom {
+        /* Mobile: stack canvas over inspector; each keeps its own scrollbar. */
+        @media (max-width: 720px) {
+          .ascii-fs__main {
+            flex-direction: column;
+          }
+          .ascii-fs__side {
+            flex: 0 0 auto;
+            max-height: 40%;
+          }
+        }
+
+        /* Bottom bar (rendered inside FullscreenShell's bottomBar slot,
+           alongside its close button — see src/widgets/FullscreenShell.tsx).
+           Stats, secondary editing tools (add box / redo / reset / copy) and
+           the raw code pane sit inline on wide viewports; below 640px they
+           collapse behind a hamburger toggle so the always-visible row stays
+           down to the toggle, undo, and download (#189). */
+        .ascii-fs__bottombar {
           display: flex;
-          gap: var(--space-4);
+          flex: 1 1 auto;
+          min-width: 0;
+          align-items: center;
           flex-wrap: wrap;
-          align-items: stretch;
+          gap: var(--space-3);
+        }
+        .ascii-fs__bottombar-row {
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+          flex: 0 0 auto;
+        }
+        .ascii-fs__bottombar-toggle {
+          display: none;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-sm);
+          background-color: var(--color-surface);
+          color: var(--color-text);
+          font-size: var(--fs-3);
+          cursor: pointer;
+        }
+        .ascii-fs__bottombar-toggle:hover {
+          border-color: var(--color-primary);
+        }
+        .ascii-fs__bottombar-toggle:focus-visible {
+          outline: 2px solid var(--color-primary);
+          outline-offset: 2px;
+        }
+        .ascii-fs__bottombar-details {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: flex-end;
+          gap: var(--space-2) var(--space-4);
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        .ascii-fs__bottombar-tools {
+          display: flex;
+          gap: var(--space-2);
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        @media (max-width: 640px) {
+          .ascii-fs__bottombar {
+            flex-direction: column;
+            align-items: stretch;
+            width: 100%;
+          }
+          .ascii-fs__bottombar-toggle {
+            display: inline-flex;
+          }
+          .ascii-fs__bottombar-details {
+            display: none;
+          }
+          .ascii-fs__bottombar-details.is-open {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            order: -1;
+            border-top: 1px solid var(--color-border);
+            padding-top: var(--space-3);
+          }
+          .ascii-fs__bottombar-row {
+            justify-content: space-between;
+            width: 100%;
+          }
         }
         .ascii-fs__code {
           flex: 1 1 380px;
@@ -645,37 +745,16 @@ export function EditAsciiDiagramTool({ locale = 'en' }: EditAsciiDiagramToolProp
           font-family: var(--font-mono, monospace);
           font-size: var(--fs-2);
         }
-        .ascii-fs__actions {
-          flex: 0 1 auto;
-          display: flex;
-          flex-direction: column;
-          gap: var(--space-1);
-        }
         .ascii-fs__strip-heading {
           font-size: var(--fs-1);
           font-weight: 600;
           color: var(--color-subtle);
           margin: 0;
         }
-        .ascii-fs__buttons {
-          display: flex;
-          gap: var(--space-2);
-          flex-wrap: wrap;
-        }
         .ascii-fs__stats {
           margin: 0;
           font-size: var(--fs-1);
           color: var(--color-subtle);
-        }
-        /* Mobile: stack canvas over inspector; each keeps its own scrollbar. */
-        @media (max-width: 720px) {
-          .ascii-fs__main {
-            flex-direction: column;
-          }
-          .ascii-fs__side {
-            flex: 0 0 auto;
-            max-height: 40%;
-          }
         }
         .ascii-canvas {
           position: relative;

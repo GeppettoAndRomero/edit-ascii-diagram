@@ -146,6 +146,10 @@ test.describe('structural editing (D10) — add/delete', () => {
     await pasteDiagram(page, ['┌───┐', '│ x │', '└───┘'].join('\n'));
 
     await expect(page.locator('[data-testid="stats-boxes"]')).toContainText('1');
+    // Below the hamburger breakpoint, add-box lives in the collapsible
+    // bottom-bar menu — open it first (see #189).
+    const toggle = page.getByTestId('bottombar-toggle');
+    if (await toggle.isVisible()) await toggle.click();
     await page.click('#add-box-action');
     await expect(page.locator('[data-testid="stats-boxes"]')).toContainText('2');
 
@@ -164,6 +168,10 @@ test.describe('structural editing (D10) — add/delete', () => {
     await waitReady(page);
     await pasteDiagram(page, ['┌───┐', '│ x │', '└───┘'].join('\n'));
 
+    // Below the hamburger breakpoint, add-box/redo live in the collapsible
+    // bottom-bar menu — open it first (see #189). Undo stays always-visible.
+    const toggle = page.getByTestId('bottombar-toggle');
+    if (await toggle.isVisible()) await toggle.click();
     await page.click('#add-box-action');
     await expect(page.locator('[data-testid="stats-boxes"]')).toContainText('2');
 

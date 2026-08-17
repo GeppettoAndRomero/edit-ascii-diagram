@@ -34,6 +34,7 @@ export const ui = {
     // Editor overlay
     editorAria: 'Diagram editor',
     closeEditor: 'Close the editor',
+    moreOptions: 'Diagram tools and details',
 
     // Canvas
     canvasHeading: 'Canvas',
@@ -117,6 +118,7 @@ export const ui = {
 
     editorAria: '図のエディタ',
     closeEditor: 'エディタを閉じる',
+    moreOptions: '図のツールと詳細',
 
     canvasHeading: 'キャンバス',
     canvasAria: 'ボックス図のキャンバス',
@@ -191,6 +193,7 @@ export const ui = {
 
     editorAria: '示意图编辑器',
     closeEditor: '关闭编辑器',
+    moreOptions: '示意图工具与详情',
 
     canvasHeading: '画布',
     canvasAria: '方框示意图画布',
@@ -266,6 +269,7 @@ export const ui = {
 
     editorAria: 'Diagramm-Editor',
     closeEditor: 'Editor schließen',
+    moreOptions: 'Diagrammwerkzeuge und Details',
 
     canvasHeading: 'Zeichenfläche',
     canvasAria: 'Zeichenfläche für das Kästchendiagramm',
@@ -341,6 +345,7 @@ export const ui = {
 
     editorAria: 'Editor del diagrama',
     closeEditor: 'Cerrar el editor',
+    moreOptions: 'Herramientas y detalles del diagrama',
 
     canvasHeading: 'Lienzo',
     canvasAria: 'Lienzo del diagrama de cajas',
